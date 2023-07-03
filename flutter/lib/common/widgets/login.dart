@@ -68,13 +68,13 @@ class ButtonOP extends StatelessWidget {
             onPressed: curOP.value.isEmpty || curOP.value == op ? onTap : null,
             child: Row(
               children: [
-                SizedBox(
+                ...(iconWidth > 0 ? [SizedBox(
                     width: 30,
                     child: _IconOP(
                       icon: op,
                       iconWidth: iconWidth,
                       margin: EdgeInsets.only(right: 5),
-                    )),
+                    ))] : []),
                 Expanded(
                     child: FittedBox(
                         fit: BoxFit.scaleDown,
@@ -476,9 +476,10 @@ Future<bool?> loginDialog() async {
                 ),
                 LoginWidgetOP(
                   ops: [
-                    ConfigOP(op: 'GitHub', iconWidth: 20),
-                    ConfigOP(op: 'Google', iconWidth: 20),
-                    ConfigOP(op: 'Okta', iconWidth: 38),
+                    ConfigOP(op: 'Nyatwork OpenID', iconWidth: 0),
+                    // ConfigOP(op: 'GitHub', iconWidth: 20),
+                    // ConfigOP(op: 'Google', iconWidth: 20),
+                    // ConfigOP(op: 'Okta', iconWidth: 38),
                   ]
                       .where((op) => oidcOptions.contains(op.op.toLowerCase()))
                       .toList(),
