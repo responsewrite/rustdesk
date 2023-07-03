@@ -451,8 +451,11 @@ impl Client {
         log::info!("peer address: {}, timeout: {}", peer, connect_timeout);
         let start = std::time::Instant::now();
         // NOTICE: Socks5 is be used event in intranet. Which may be not a good way.
-        let mut conn =
-            socket_client::connect_tcp_local(peer, Some(local_addr), connect_timeout).await;
+        let mut conn = if peer_nat_type == NatType::SYMMETRIC {
+            Err(anyhow!("Symmetric NAT"))
+        } else {
+            socket_client::connect_tcp_local(peer, Some(local_addr), connect_timeout).await
+        };
         let mut direct = !conn.is_err();
         interface.update_direct(Some(direct));
         if interface.is_force_relay() || conn.is_err() {
