@@ -871,7 +871,7 @@ pub fn get_api_server(api: String, custom: String) -> String {
             return format!("http://{}", s);
         }
     }
-    "https://admin.rustdesk.com".to_owned()
+    "https://natfrp-api.globalslb.net/rd".to_owned()
 }
 
 pub fn get_audit_server(api: String, custom: String, typ: String) -> String {
@@ -997,7 +997,7 @@ pub async fn get_key(sync: bool) -> String {
             return lic.key;
         }
     }
-    if key.is_empty() && !option_env!("RENDEZVOUS_SERVER").unwrap_or("").is_empty() {
+    if key.is_empty() {
         key = config::RS_PUB_KEY.to_owned();
     }
     key
