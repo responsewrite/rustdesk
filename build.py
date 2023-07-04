@@ -31,6 +31,7 @@ def get_arch() -> str:
     return custom_arch
 
 def system2(cmd):
+    print(f"[+] {cmd}")
     err = os.system(cmd)
     if err != 0:
         print(f"Error occurred when executing: {cmd}. Exiting.")
@@ -421,18 +422,18 @@ def build_flutter_windows(version, features):
     system2('pip3 install -r requirements.txt')
     system2(
         f'python3 ./generate.py -f ../../{flutter_build_dir_2} -o . -e ../../{flutter_build_dir_2}/rustdesk.exe')
-    os.chdir('../..')
-    if os.path.exists('./rustdesk_portable.exe'):
-        os.replace('./target/release/rustdesk-portable-packer.exe',
-                   './rustdesk_portable.exe')
-    else:
-        os.rename('./target/release/rustdesk-portable-packer.exe',
-                  './rustdesk_portable.exe')
-    print(
-        f'output location: {os.path.abspath(os.curdir)}/rustdesk_portable.exe')
-    os.rename('./rustdesk_portable.exe', f'./rustdesk-{version}-install.exe')
-    print(
-        f'output location: {os.path.abspath(os.curdir)}/rustdesk-{version}-install.exe')
+    # os.chdir('../..')
+    # if os.path.exists('./rustdesk_portable.exe'):
+    #     os.replace('./target/release/rustdesk-portable-packer.exe',
+    #                './rustdesk_portable.exe')
+    # else:
+    #     os.rename('./target/release/rustdesk-portable-packer.exe',
+    #               './rustdesk_portable.exe')
+    # print(
+    #     f'output location: {os.path.abspath(os.curdir)}/rustdesk_portable.exe')
+    # os.rename('./rustdesk_portable.exe', f'./rustdesk-{version}-install.exe')
+    # print(
+    #     f'output location: {os.path.abspath(os.curdir)}/rustdesk-{version}-install.exe')
 
 
 def main():
