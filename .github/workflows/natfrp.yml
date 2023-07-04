@@ -1,12 +1,17 @@
 name: SakuraFrp builds
 
-on: [workflow_dispatch]
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        type: string
+        description: 'Tag to build, blank for edge build'
 
 env:
   LLVM_VERSION: "15.0.6"
   FLUTTER_VERSION: "3.10.5"
   FLUTTER_RUST_BRIDGE_VERSION: "1.75.3"
-  TAG_NAME: "edge"
+  TAG_NAME: ${{ inputs.tag || 'edge' }}
   VERSION: "1.2.0"
 
 jobs:
@@ -16,6 +21,8 @@ jobs:
     steps:
       - name: Checkout source code
         uses: actions/checkout@v3
+        with:
+          ref: ${{ inputs.tag }}
 
       - name: Cache [Install LLVM and Clang]
         id: cache-llvm
