@@ -233,6 +233,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Username missed", "ไม่พบข้อมูลผู้ใช้งาน"),
         ("Password missed", "ไม่พบรหัสผ่าน"),
         ("Wrong credentials", "ข้อมูลสำหรับเข้าสู่ระบบไม่ถูกต้อง"),
+        ("The verification code is incorrect or has expired", ""),
         ("Edit Tag", "แก้ไขแท็ก"),
         ("Unremember Password", "ยกเลิกการจดจำรหัสผ่าน"),
         ("Favorites", "รายการโปรด"),
@@ -512,5 +513,9 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Accept and Elevate", ""),
         ("accept_and_elevate_btn_tooltip", ""),
         ("clipboard_wait_response_timeout_tip", ""),
+        ("Incoming connection", ""),
+        ("Outgoing connection", ""),
+        ("Exit", ""),
+        ("Open", ""),
     ].iter().cloned().collect();
 }

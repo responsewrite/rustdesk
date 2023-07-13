@@ -233,6 +233,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Username missed", "用户名没有填写"),
         ("Password missed", "密码没有填写"),
         ("Wrong credentials", "提供的登录信息错误"),
+        ("The verification code is incorrect or has expired", "验证码错误或已超时"),
         ("Edit Tag", "修改标签"),
         ("Unremember Password", "忘记密码"),
         ("Favorites", "收藏"),
@@ -453,7 +454,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Voice call", "语音通话"),
         ("Text chat", "文字聊天"),
         ("Stop voice call", "停止语音通话"),
-        ("relay_hint_tip", "可能无法直连，可以尝试中继连接。\n另外，如果想直接使用中继连接，可以在 ID 后面添加/r，或者在卡片选项里选择强制走中继连接。"),
+        ("relay_hint_tip", "可能无法直连，可以尝试中继连接。\n另外，如果想直接使用中继连接，可以在 ID 后面添加/r，如果最近访问里存在该卡片，也可以在卡片选项里选择强制走中继连接。"),
         ("Reconnect", "重连"),
         ("Codec", "编解码"),
         ("Resolution", "分辨率"),
@@ -512,5 +513,9 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Accept and Elevate", "接受并提权"),
         ("accept_and_elevate_btn_tooltip", "接受连接并提升 UAC 权限"),
         ("clipboard_wait_response_timeout_tip", "等待拷贝响应超时"),
+        ("Incoming connection", "收到的连接"),
+        ("Outgoing connection", "发起的连接"),
+        ("Exit", "退出"),
+        ("Open", "打开"),
     ].iter().cloned().collect();
 }

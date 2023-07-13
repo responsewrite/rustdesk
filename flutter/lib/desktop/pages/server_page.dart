@@ -100,10 +100,16 @@ class ConnectionManagerState extends State<ConnectionManager> {
     gFFI.serverModel.tabController.onSelected = (client_id_str) {
       final client_id = int.tryParse(client_id_str);
       if (client_id != null) {
-        gFFI.chatModel.changeCurrentID(client_id);
         final client =
             gFFI.serverModel.clients.firstWhereOrNull((e) => e.id == client_id);
         if (client != null) {
+          gFFI.chatModel.changeCurrentKey(MessageKey(client.peerId, client.id));
+          if (client.unreadChatMessageCount.value > 0) {
+            Future.delayed(Duration.zero, () {
+              client.unreadChatMessageCount.value = 0;
+              gFFI.chatModel.showChatPage(MessageKey(client.peerId, client.id));
+            });
+          }
           windowManager.setTitle(getWindowNameWithId(client.peerId));
         }
       }
@@ -144,10 +150,11 @@ class ConnectionManagerState extends State<ConnectionManager> {
               showClose: true,
               onWindowCloseButton: handleWindowCloseButton,
               controller: serverModel.tabController,
+              selectedBorderColor: MyTheme.accent,
               maxLabelWidth: 100,
               tail: buildScrollJumper(),
               selectedTabBackgroundColor:
-                  Theme.of(context).hintColor.withOpacity(0.2),
+                  Theme.of(context).hintColor.withOpacity(0),
               tabBuilder: (key, icon, label, themeConf) {
                 final client = serverModel.clients
                     .firstWhereOrNull((client) => client.id.toString() == key);
@@ -158,10 +165,8 @@ class ConnectionManagerState extends State<ConnectionManager> {
                         message: key,
                         waitDuration: Duration(seconds: 1),
                         child: label),
-                    Obx(() => Offstage(
-                        offstage:
-                            !(client?.hasUnreadChatMessage.value ?? false),
-                        child: Icon(Icons.circle, color: Colors.red, size: 10)))
+                    unreadMessageCountBuilder(client?.unreadChatMessageCount)
+                        .marginOnly(left: 4),
                   ],
                 );
               },
@@ -170,7 +175,16 @@ class ConnectionManagerState extends State<ConnectionManager> {
                   Consumer<ChatModel>(
                     builder: (_, model, child) => model.isShowCMChatPage
                         ? Expanded(
-                            child: ChatPage(),
+                            child: buildRemoteBlock(
+                              child: Container(
+                                  decoration: BoxDecoration(
+                                      border: Border(
+                                          right: BorderSide(
+                                              color: Theme.of(context)
+                                                  .dividerColor))),
+                                  child:
+                                      ChatPage(type: ChatPageType.desktopCM)),
+                            ),
                             flex: (kConnectionManagerWindowSizeOpenChat.width -
                                     kConnectionManagerWindowSizeClosedChat
                                         .width)
@@ -437,7 +451,8 @@ class _CmHeaderState extends State<_CmHeader>
             child: IconButton(
               onPressed: () => checkClickTime(
                 client.id,
-                () => gFFI.chatModel.toggleCMChatPage(client.id),
+                () => gFFI.chatModel
+                    .toggleCMChatPage(MessageKey(client.peerId, client.id)),
               ),
               icon: SvgPicture.asset('assets/chat2.svg'),
               splashRadius: kDesktopIconButtonSplashRadius,

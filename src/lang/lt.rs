@@ -233,6 +233,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Username missed", "Prarastas vartotojo vardas"),
         ("Password missed", "Slaptažodis praleistas"),
         ("Wrong credentials", "Klaidingi kredencialai"),
+        ("The verification code is incorrect or has expired", ""),
         ("Edit Tag", "Redaguoti žymą"),
         ("Unremember Password", "Nebeprisiminti slaptažodžio"),
         ("Favorites", "Parankiniai"),
@@ -512,5 +513,9 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Accept and Elevate", ""),
         ("accept_and_elevate_btn_tooltip", ""),
         ("clipboard_wait_response_timeout_tip", ""),
+        ("Incoming connection", ""),
+        ("Outgoing connection", ""),
+        ("Exit", ""),
+        ("Open", ""),
     ].iter().cloned().collect();
 }

@@ -233,6 +233,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Username missed", "Δεν συμπληρώσατε το όνομα χρήστη"),
         ("Password missed", "Δεν συμπληρώσατε τον κωδικό πρόσβασης"),
         ("Wrong credentials", "Λάθος διαπιστευτήρια"),
+        ("The verification code is incorrect or has expired", ""),
         ("Edit Tag", "Επεξεργασία ετικέτας"),
         ("Unremember Password", "Διαγραφή απομνημονευμένου κωδικού"),
         ("Favorites", "Αγαπημένα"),
@@ -512,5 +513,9 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Accept and Elevate", ""),
         ("accept_and_elevate_btn_tooltip", ""),
         ("clipboard_wait_response_timeout_tip", ""),
+        ("Incoming connection", ""),
+        ("Outgoing connection", ""),
+        ("Exit", ""),
+        ("Open", ""),
     ].iter().cloned().collect();
 }

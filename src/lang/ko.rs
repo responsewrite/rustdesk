@@ -233,6 +233,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Username missed", "사용자명 누락"),
         ("Password missed", "비밀번호 누락"),
         ("Wrong credentials", "틀린 인증 정보"),
+        ("The verification code is incorrect or has expired", ""),
         ("Edit Tag", "태그 수정"),
         ("Unremember Password", "패스워드 기억하지 않기"),
         ("Favorites", "즐겨찾기"),
@@ -512,5 +513,9 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Accept and Elevate", ""),
         ("accept_and_elevate_btn_tooltip", ""),
         ("clipboard_wait_response_timeout_tip", ""),
+        ("Incoming connection", ""),
+        ("Outgoing connection", ""),
+        ("Exit", ""),
+        ("Open", ""),
     ].iter().cloned().collect();
 }
