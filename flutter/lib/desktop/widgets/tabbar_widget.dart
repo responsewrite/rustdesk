@@ -146,8 +146,10 @@ class DesktopTabController {
 
   /// For addTab, tabPage has not been initialized, set [callOnSelected] to false,
   /// and call [onSelected] at the end of initState
-  void jumpTo(int index, {bool callOnSelected = true}) {
-    if (!isDesktop || index < 0) return;
+  bool jumpTo(int index, {bool callOnSelected = true}) {
+    if (!isDesktop || index < 0) {
+      return false;
+    }
     state.update((val) {
       val!.selected = index;
       Future.delayed(Duration(milliseconds: 100), (() {
@@ -168,7 +170,12 @@ class DesktopTabController {
         onSelected?.call(key);
       }
     }
+    return true;
   }
+
+  bool jumpToByKey(String key, {bool callOnSelected = true}) =>
+      jumpTo(state.value.tabs.indexWhere((tab) => tab.key == key),
+          callOnSelected: callOnSelected);
 
   void closeBy(String? key) {
     if (!isDesktop) return;
@@ -230,7 +237,6 @@ class DesktopTab extends StatelessWidget {
   final DesktopTabController controller;
 
   Rx<DesktopTabState> get state => controller.state;
-  final isMaximized = false.obs;
   final _scrollDebounce = Debouncer(delay: Duration(milliseconds: 50));
 
   late final DesktopTabType tabType;
@@ -366,7 +372,7 @@ class DesktopTab extends StatelessWidget {
                         if (elapsed < bind.getDoubleClickTime()) {
                           // onDoubleTap
                           toggleMaximize(isMainWindow)
-                              .then((value) => isMaximized.value = value);
+                              .then((value) => stateGlobal.setMaximized(value));
                         }
                       }
                     : null,
@@ -434,7 +440,7 @@ class DesktopTab extends StatelessWidget {
           tabType: tabType,
           state: state,
           tail: tail,
-          isMaximized: isMaximized,
+          isMaximized: stateGlobal.isMaximized,
           showMinimize: showMinimize,
           showMaximize: showMaximize,
           showClose: showClose,
@@ -478,6 +484,8 @@ class WindowActionPanel extends StatefulWidget {
 
 class WindowActionPanelState extends State<WindowActionPanel>
     with MultiWindowListener, WindowListener {
+  final _saveFrameDebounce = Debouncer(delay: Duration(seconds: 1));
+
   @override
   void initState() {
     super.initState();
@@ -512,9 +520,17 @@ class WindowActionPanelState extends State<WindowActionPanel>
     super.dispose();
   }
 
-  void _setMaximize(bool maximize) {
-    stateGlobal.setMaximize(maximize);
+  void _setMaximized(bool maximize) {
+    stateGlobal.setMaximized(maximize);
+    _saveFrameDebounce.call(_saveFrame);
     setState(() {});
+  }
+
+  @override
+  void onWindowMinimize() {
+    stateGlobal.setMinimized(true);
+    stateGlobal.setMaximized(false);
+    super.onWindowMinimize();
   }
 
   @override
@@ -523,7 +539,8 @@ class WindowActionPanelState extends State<WindowActionPanel>
     if (!widget.isMaximized.value) {
       widget.isMaximized.value = true;
     }
-    _setMaximize(true);
+    stateGlobal.setMinimized(false);
+    _setMaximized(true);
     super.onWindowMaximize();
   }
 
@@ -533,8 +550,29 @@ class WindowActionPanelState extends State<WindowActionPanel>
     if (widget.isMaximized.value) {
       widget.isMaximized.value = false;
     }
-    _setMaximize(false);
+    stateGlobal.setMinimized(false);
+    _setMaximized(false);
     super.onWindowUnmaximize();
+  }
+
+  _saveFrame() async {
+    if (widget.tabType == DesktopTabType.main) {
+      await saveWindowPosition(WindowType.Main);
+    } else if (kWindowType != null && kWindowId != null) {
+      await saveWindowPosition(kWindowType!, windowId: kWindowId);
+    }
+  }
+
+  @override
+  void onWindowMoved() {
+    _saveFrameDebounce.call(_saveFrame);
+    super.onWindowMoved();
+  }
+
+  @override
+  void onWindowResized() {
+    _saveFrameDebounce.call(_saveFrame);
+    super.onWindowMoved();
   }
 
   @override
@@ -678,7 +716,7 @@ Future<bool> closeConfirmDialog() async {
     submit() {
       final opt = "enable-confirm-closing-tabs";
       String value = bool2option(opt, confirm);
-      bind.mainSetOption(key: opt, value: value);
+      bind.mainSetLocalOption(key: opt, value: value);
       close(true);
     }
 

@@ -1,6 +1,7 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
+    io::{Read, Write},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     ops::{Deref, DerefMut},
     path::{Path, PathBuf},
@@ -13,14 +14,16 @@ use rand::Rng;
 use regex::Regex;
 use serde as de;
 use serde_derive::{Deserialize, Serialize};
+use serde_json;
 use sodiumoxide::base64;
 use sodiumoxide::crypto::sign;
 
 use crate::{
+    compress::{compress, decompress},
     log,
     password_security::{
         decrypt_str_or_original, decrypt_vec_or_original, encrypt_str_or_original,
-        encrypt_vec_or_original,
+        encrypt_vec_or_original, symmetric_crypt,
     },
 };
 
@@ -31,6 +34,11 @@ pub const REG_INTERVAL: i64 = 12_000;
 pub const COMPRESS_LEVEL: i32 = 3;
 const SERIAL: i32 = 3;
 const PASSWORD_ENC_VERSION: &str = "00";
+const ENCRYPT_MAX_LEN: usize = 128;
+
+// config2 options
+#[cfg(target_os = "linux")]
+pub const CONFIG_OPTION_ALLOW_LINUX_HEADLESS: &str = "allow-linux-headless";
 
 #[cfg(target_os = "macos")]
 lazy_static::lazy_static! {
@@ -49,10 +57,11 @@ lazy_static::lazy_static! {
         Some(key) if !key.is_empty() => key,
         _ => "",
     }.to_owned()));
+    pub static ref EXE_RENDEZVOUS_SERVER: Arc<RwLock<String>> = Default::default();
     pub static ref APP_NAME: Arc<RwLock<String>> = Arc::new(RwLock::new("RustDesk".to_owned()));
     static ref KEY_PAIR: Arc<Mutex<Option<KeyPair>>> = Default::default();
-    static ref HW_CODEC_CONFIG: Arc<RwLock<HwCodecConfig>> = Arc::new(RwLock::new(HwCodecConfig::load()));
     static ref USER_DEFAULT_CONFIG: Arc<RwLock<(UserDefaultConfig, Instant)>> = Arc::new(RwLock::new((UserDefaultConfig::load(), Instant::now())));
+    pub static ref NEW_STORED_PEER_CONFIG: Arc<Mutex<HashSet<String>>> = Default::default();
 }
 
 lazy_static::lazy_static! {
@@ -81,9 +90,7 @@ const CHARS: &[char] = &[
     'm', 'n', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
 ];
 
-pub const RENDEZVOUS_SERVERS: &[&str] = &[
-    "rd-1.natfrp.cloud",
-];
+pub const RENDEZVOUS_SERVERS: &[&str] = &["rd-1.natfrp.cloud"];
 
 pub const RS_PUB_KEY: &str = match option_env!("RS_PUB_KEY") {
     Some(key) if !key.is_empty() => key,
@@ -374,7 +381,8 @@ impl Config2 {
     fn store(&self) {
         let mut config = self.clone();
         if let Some(mut socks) = config.socks {
-            socks.password = encrypt_str_or_original(&socks.password, PASSWORD_ENC_VERSION);
+            socks.password =
+                encrypt_str_or_original(&socks.password, PASSWORD_ENC_VERSION, ENCRYPT_MAX_LEN);
             config.socks = Some(socks);
         }
         Config::store_(&config, "2");
@@ -398,10 +406,15 @@ impl Config2 {
 pub fn load_path<T: serde::Serialize + serde::de::DeserializeOwned + Default + std::fmt::Debug>(
     file: PathBuf,
 ) -> T {
-    let cfg = match confy::load_path(file) {
+    let cfg = match confy::load_path(&file) {
         Ok(config) => config,
         Err(err) => {
-            log::error!("Failed to load config: {}", err);
+            if let confy::ConfyError::GeneralLoadError(err) = &err {
+                if err.kind() == std::io::ErrorKind::NotFound {
+                    return T::default();
+                }
+            }
+            log::error!("Failed to load config '{}': {}", file.display(), err);
             T::default()
         }
     };
@@ -478,8 +491,9 @@ impl Config {
 
     fn store(&self) {
         let mut config = self.clone();
-        config.password = encrypt_str_or_original(&config.password, PASSWORD_ENC_VERSION);
-        config.enc_id = encrypt_str_or_original(&config.id, PASSWORD_ENC_VERSION);
+        config.password =
+            encrypt_str_or_original(&config.password, PASSWORD_ENC_VERSION, ENCRYPT_MAX_LEN);
+        config.enc_id = encrypt_str_or_original(&config.id, PASSWORD_ENC_VERSION, ENCRYPT_MAX_LEN);
         config.id = "".to_owned();
         Config::store_(&config, "");
     }
@@ -606,7 +620,10 @@ impl Config {
     }
 
     pub fn get_rendezvous_server() -> String {
-        let mut rendezvous_server = Self::get_option("custom-rendezvous-server");
+        let mut rendezvous_server = EXE_RENDEZVOUS_SERVER.read().unwrap().clone();
+        if rendezvous_server.is_empty() {
+            rendezvous_server = Self::get_option("custom-rendezvous-server");
+        }
         if rendezvous_server.is_empty() {
             rendezvous_server = PROD_RENDEZVOUS_SERVER.read().unwrap().clone();
         }
@@ -626,6 +643,10 @@ impl Config {
     }
 
     pub fn get_rendezvous_servers() -> Vec<String> {
+        let s = EXE_RENDEZVOUS_SERVER.read().unwrap().clone();
+        if !s.is_empty() {
+            return vec![s];
+        }
         let s = Self::get_option("custom-rendezvous-server");
         if !s.is_empty() {
             return vec![s];
@@ -957,7 +978,12 @@ impl PeerConfig {
                 config
             }
             Err(err) => {
-                log::error!("Failed to load config: {}", err);
+                if let confy::ConfyError::GeneralLoadError(err) = &err {
+                    if err.kind() == std::io::ErrorKind::NotFound {
+                        return Default::default();
+                    }
+                }
+                log::error!("Failed to load peer config '{}': {}", id, err);
                 Default::default()
             }
         }
@@ -966,15 +992,17 @@ impl PeerConfig {
     pub fn store(&self, id: &str) {
         let _lock = CONFIG.read().unwrap();
         let mut config = self.clone();
-        config.password = encrypt_vec_or_original(&config.password, PASSWORD_ENC_VERSION);
+        config.password =
+            encrypt_vec_or_original(&config.password, PASSWORD_ENC_VERSION, ENCRYPT_MAX_LEN);
         for opt in ["rdp_password", "os-username", "os-password"] {
             if let Some(v) = config.options.get_mut(opt) {
-                *v = encrypt_str_or_original(v, PASSWORD_ENC_VERSION)
+                *v = encrypt_str_or_original(v, PASSWORD_ENC_VERSION, ENCRYPT_MAX_LEN)
             }
         }
         if let Err(err) = store_path(Self::path(id), config) {
             log::error!("Failed to store config: {}", err);
         }
+        NEW_STORED_PEER_CONFIG.lock().unwrap().insert(id.to_owned());
     }
 
     pub fn remove(id: &str) {
@@ -1000,7 +1028,7 @@ impl PeerConfig {
         Config::with_extension(Config::path(path))
     }
 
-    pub fn peers() -> Vec<(String, SystemTime, PeerConfig)> {
+    pub fn peers(id_filters: Option<Vec<String>>) -> Vec<(String, SystemTime, PeerConfig)> {
         if let Ok(peers) = Config::path(PEERS).read_dir() {
             if let Ok(peers) = peers
                 .map(|res| res.map(|e| e.path()))
@@ -1013,7 +1041,6 @@ impl PeerConfig {
                             && p.extension().map(|p| p.to_str().unwrap_or("")) == Some("toml")
                     })
                     .map(|p| {
-                        let t = crate::get_modified_time(p);
                         let id = p
                             .file_stem()
                             .map(|p| p.to_str().unwrap_or(""))
@@ -1027,12 +1054,21 @@ impl PeerConfig {
                         } else {
                             id
                         };
-
-                        let c = PeerConfig::load(&id_decoded_string);
+                        (id_decoded_string, p)
+                    })
+                    .filter(|(id, _)| {
+                        let Some(filters) = &id_filters else {
+                            return true;
+                        };
+                        filters.contains(id)
+                    })
+                    .map(|(id, p)| {
+                        let t = crate::get_modified_time(p);
+                        let c = PeerConfig::load(&id);
                         if c.info.platform.is_empty() {
                             fs::remove_file(p).ok();
                         }
-                        (id_decoded_string, t, c)
+                        (id, t, c)
                     })
                     .filter(|p| !p.2.info.platform.is_empty())
                     .collect();
@@ -1041,6 +1077,10 @@ impl PeerConfig {
             }
         }
         Default::default()
+    }
+
+    pub fn exists(id: &str) -> bool {
+        Self::path(id).exists()
     }
 
     serde_field_string!(
@@ -1072,7 +1112,7 @@ impl PeerConfig {
         D: de::Deserializer<'de>,
     {
         let v: Vec<i32> = de::Deserialize::deserialize(deserializer)?;
-        if v.len() == 1 && v[0] >= 10 && v[0] <= 100 {
+        if v.len() == 1 && v[0] >= 10 && v[0] <= 0xFFF {
             Ok(v)
         } else {
             Ok(Self::default_custom_image_quality())
@@ -1254,7 +1294,7 @@ impl LocalConfig {
         }
     }
 
-    pub fn get_flutter_config(k: &str) -> String {
+    pub fn get_flutter_option(k: &str) -> String {
         if let Some(v) = LOCAL_CONFIG.read().unwrap().ui_flutter.get(k) {
             v.clone()
         } else {
@@ -1262,7 +1302,7 @@ impl LocalConfig {
         }
     }
 
-    pub fn set_flutter_config(k: String, v: String) {
+    pub fn set_flutter_option(k: String, v: String) {
         let mut config = LOCAL_CONFIG.write().unwrap();
         let v2 = if v.is_empty() { None } else { Some(&v) };
         if v2 != config.ui_flutter.get(&k) {
@@ -1349,18 +1389,8 @@ impl HwCodecConfig {
         Config::store_(self, "_hwcodec");
     }
 
-    pub fn remove() {
-        std::fs::remove_file(Config::file_("_hwcodec")).ok();
-    }
-
-    /// refresh current global HW_CODEC_CONFIG, usually uesd after HwCodecConfig::remove()
-    pub fn refresh() {
-        *HW_CODEC_CONFIG.write().unwrap() = HwCodecConfig::load();
-        log::debug!("HW_CODEC_CONFIG refreshed successfully");
-    }
-
-    pub fn get() -> HwCodecConfig {
-        return HW_CODEC_CONFIG.read().unwrap().clone();
+    pub fn clear() {
+        HwCodecConfig::default().store();
     }
 }
 
@@ -1396,7 +1426,7 @@ impl UserDefaultConfig {
             "codec-preference" => {
                 self.get_string(key, "auto", vec!["vp8", "vp9", "av1", "h264", "h265"])
             }
-            "custom_image_quality" => self.get_double_string(key, 50.0, 10.0, 100.0),
+            "custom_image_quality" => self.get_double_string(key, 50.0, 10.0, 0xFFF as f64),
             "custom-fps" => self.get_double_string(key, 30.0, 5.0, 120.0),
             _ => self
                 .options
@@ -1441,6 +1471,103 @@ impl UserDefaultConfig {
     }
 }
 
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+pub struct AbPeer {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_string",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub id: String,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_string",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub hash: String,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_string",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub username: String,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_string",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub hostname: String,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_string",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub platform: String,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_string",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub alias: String,
+    #[serde(default, deserialize_with = "deserialize_vec_string")]
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+pub struct Ab {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_string",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub access_token: String,
+    #[serde(default, deserialize_with = "deserialize_vec_abpeer")]
+    pub peers: Vec<AbPeer>,
+    #[serde(default, deserialize_with = "deserialize_vec_string")]
+    pub tags: Vec<String>,
+}
+
+impl Ab {
+    fn path() -> PathBuf {
+        let filename = format!("{}_ab", APP_NAME.read().unwrap().clone());
+        Config::path(filename)
+    }
+
+    pub fn store(json: String) {
+        if let Ok(mut file) = std::fs::File::create(Self::path()) {
+            let data = compress(json.as_bytes());
+            let max_len = 64 * 1024 * 1024;
+            if data.len() > max_len {
+                // maxlen of function decompress
+                return;
+            }
+            if let Ok(data) = symmetric_crypt(&data, true) {
+                file.write_all(&data).ok();
+            }
+        };
+    }
+
+    pub fn load() -> Ab {
+        if let Ok(mut file) = std::fs::File::open(Self::path()) {
+            let mut data = vec![];
+            if file.read_to_end(&mut data).is_ok() {
+                if let Ok(data) = symmetric_crypt(&data, false) {
+                    let data = decompress(&data);
+                    if let Ok(ab) = serde_json::from_str::<Ab>(&String::from_utf8_lossy(&data)) {
+                        return ab;
+                    }
+                }
+            }
+        };
+        Self::remove();
+        Ab::default()
+    }
+
+    pub fn remove() {
+        std::fs::remove_file(Self::path()).ok();
+    }
+}
+
 // use default value when field type is wrong
 macro_rules! deserialize_default {
     ($func_name:ident, $return_type:ty) => {
@@ -1460,6 +1587,7 @@ deserialize_default!(deserialize_vec_u8, Vec<u8>);
 deserialize_default!(deserialize_vec_string, Vec<String>);
 deserialize_default!(deserialize_vec_i32_string_i32, Vec<(i32, String, i32)>);
 deserialize_default!(deserialize_vec_discoverypeer, Vec<DiscoveryPeer>);
+deserialize_default!(deserialize_vec_abpeer, Vec<AbPeer>);
 deserialize_default!(deserialize_keypair, KeyPair);
 deserialize_default!(deserialize_size, Size);
 deserialize_default!(deserialize_hashmap_string_string, HashMap<String, String>);

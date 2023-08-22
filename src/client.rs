@@ -24,6 +24,8 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 pub use file_trait::FileManager;
+#[cfg(windows)]
+use hbb_common::tokio;
 #[cfg(not(feature = "flutter"))]
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use hbb_common::tokio::sync::mpsc::UnboundedSender;
@@ -32,7 +34,8 @@ use hbb_common::{
     anyhow::{anyhow, Context},
     bail,
     config::{
-        Config, PeerConfig, PeerInfoSerde, Resolution, CONNECT_TIMEOUT, READ_TIMEOUT, RELAY_PORT,
+        Config, LocalConfig, PeerConfig, PeerInfoSerde, Resolution, CONNECT_TIMEOUT, READ_TIMEOUT,
+        RELAY_PORT,
     },
     get_version_number, log,
     message_proto::{option_message::BoolOption, *},
@@ -40,6 +43,7 @@ use hbb_common::{
     rand,
     rendezvous_proto::*,
     socket_client,
+    sodiumoxide::base64,
     sodiumoxide::crypto::{box_, secretbox, sign},
     tcp::FramedStream,
     timeout,
@@ -88,6 +92,7 @@ pub const LOGIN_MSG_PASSWORD_EMPTY: &str = "Empty Password";
 pub const LOGIN_MSG_PASSWORD_WRONG: &str = "Wrong Password";
 pub const LOGIN_MSG_NO_PASSWORD_ACCESS: &str = "No Password Access";
 pub const LOGIN_MSG_OFFLINE: &str = "Offline";
+pub const LOGIN_SCREEN_WAYLAND: &str = "Wayland login screen is not supported";
 #[cfg(target_os = "linux")]
 pub const SCRAP_UBUNTU_HIGHER_REQUIRED: &str = "Wayland requires Ubuntu 21.04 or higher version.";
 #[cfg(target_os = "linux")]
@@ -315,19 +320,20 @@ impl Client {
                             if !ph.other_failure.is_empty() {
                                 bail!(ph.other_failure);
                             }
-                            match ph.failure.enum_value_or_default() {
-                                punch_hole_response::Failure::ID_NOT_EXIST => {
+                            match ph.failure.enum_value() {
+                                Ok(punch_hole_response::Failure::ID_NOT_EXIST) => {
                                     bail!("ID does not exist");
                                 }
-                                punch_hole_response::Failure::OFFLINE => {
+                                Ok(punch_hole_response::Failure::OFFLINE) => {
                                     bail!("Remote desktop is offline");
                                 }
-                                punch_hole_response::Failure::LICENSE_MISMATCH => {
+                                Ok(punch_hole_response::Failure::LICENSE_MISMATCH) => {
                                     bail!("Key mismatch");
                                 }
-                                punch_hole_response::Failure::LICENSE_OVERUSE => {
+                                Ok(punch_hole_response::Failure::LICENSE_OVERUSE) => {
                                     bail!("Key overuse");
                                 }
+                                _ => bail!("other punch hole failure"),
                             }
                         } else {
                             peer_nat_type = ph.nat_type();
@@ -471,11 +477,8 @@ impl Client {
                 )
                 .await;
                 interface.update_direct(Some(false));
-                if conn.is_err() {
-                    bail!(
-                        "Failed to connect via relay server: {}",
-                        conn.err().unwrap()
-                    );
+                if let Err(e) = conn {
+                    bail!("Failed to connect via relay server: {}", e);
                 }
                 direct = false;
             } else {
@@ -508,11 +511,13 @@ impl Client {
         });
         let mut sign_pk = None;
         let mut option_pk = None;
-        if !signed_id_pk.is_empty() && rs_pk.is_some() {
-            if let Ok((id, pk)) = decode_id_pk(&signed_id_pk, &rs_pk.unwrap()) {
-                if id == peer_id {
-                    sign_pk = Some(sign::PublicKey(pk));
-                    option_pk = Some(pk.to_vec());
+        if !signed_id_pk.is_empty() {
+            if let Some(rs_pk) = rs_pk {
+                if let Ok((id, pk)) = decode_id_pk(&signed_id_pk, &rs_pk) {
+                    if id == peer_id {
+                        sign_pk = Some(sign::PublicKey(pk));
+                        option_pk = Some(pk.to_vec());
+                    }
                 }
             }
             if sign_pk.is_none() {
@@ -1072,6 +1077,7 @@ pub struct LoginConfigHandler {
     pub direct: Option<bool>,
     pub received: bool,
     switch_uuid: Option<String>,
+    pub save_ab_password_to_recent: bool, // true: connected with ab password
 }
 
 impl Deref for LoginConfigHandler {
@@ -1112,7 +1118,8 @@ impl LoginConfigHandler {
         self.remember = !config.password.is_empty();
         self.config = config;
         let mut sid = rand::random();
-        if sid == 0 { // you won the lottery
+        if sid == 0 {
+            // you won the lottery
             sid = 1;
         }
         self.session_id = sid;
@@ -1207,7 +1214,11 @@ impl LoginConfigHandler {
     /// * `v` - value of option
     pub fn save_ui_flutter(&mut self, k: String, v: String) {
         let mut config = self.load_config();
-        config.ui_flutter.insert(k, v);
+        if v.is_empty() {
+            config.ui_flutter.remove(&k);
+        } else {
+            config.ui_flutter.insert(k, v);
+        }
         self.save_config(config);
     }
 
@@ -1640,10 +1651,25 @@ impl LoginConfigHandler {
                 log::debug!("remember password of {}", self.id);
             }
         } else {
-            if !password0.is_empty() {
+            if self.save_ab_password_to_recent {
+                config.password = password;
+                log::debug!("save ab password of {} to recent", self.id);
+            } else if !password0.is_empty() {
                 config.password = Default::default();
                 log::debug!("remove password of {}", self.id);
             }
+        }
+        #[cfg(feature = "flutter")]
+        {
+            // sync ab password with PeerConfig password
+            let password = base64::encode(config.password.clone(), base64::Variant::Original);
+            let evt: HashMap<&str, String> = HashMap::from([
+                ("name", "sync_peer_password_to_ab".to_string()),
+                ("id", self.id.clone()),
+                ("password", password),
+            ]);
+            let evt = serde_json::ser::to_string(&evt).unwrap_or("".to_owned());
+            crate::flutter::push_global_event(crate::flutter::APP_TYPE_MAIN, evt);
         }
         if config.keyboard_mode.is_empty() {
             if is_keyboard_mode_supported(&KeyboardMode::Map, get_version_number(&pi.version)) {
@@ -1790,6 +1816,8 @@ where
     let mut skip_beginning = 0;
 
     std::thread::spawn(move || {
+        #[cfg(windows)]
+        sync_cpu_usage();
         let mut video_handler = VideoHandler::new();
         loop {
             if let Ok(data) = video_receiver.recv() {
@@ -1822,7 +1850,7 @@ where
                                 );
                             }
                             // Clear to get real-time fps
-                            if count > 300 {
+                            if count > 150 {
                                 count = 0;
                                 duration = Duration::ZERO;
                             }
@@ -1871,6 +1899,39 @@ pub fn start_audio_thread() -> MediaSender {
         log::info!("Audio decoder loop exits");
     });
     audio_sender
+}
+
+#[cfg(windows)]
+fn sync_cpu_usage() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let t = std::thread::spawn(do_sync_cpu_usage);
+        t.join().ok();
+    });
+}
+
+#[cfg(windows)]
+#[tokio::main(flavor = "current_thread")]
+async fn do_sync_cpu_usage() {
+    use crate::ipc::{connect, Data};
+    let start = std::time::Instant::now();
+    match connect(50, "").await {
+        Ok(mut conn) => {
+            if conn.send(&&Data::SyncWinCpuUsage(None)).await.is_ok() {
+                if let Ok(Some(data)) = conn.next_timeout(50).await {
+                    match data {
+                        Data::SyncWinCpuUsage(cpu_usage) => {
+                            hbb_common::platform::windows::sync_cpu_usage(cpu_usage);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    log::info!("{:?} used to sync cpu usage", start.elapsed());
 }
 
 /// Handle latency test.
@@ -1968,6 +2029,32 @@ pub fn send_mouse(
     interface.send(Data::Message(msg_out));
 }
 
+#[inline]
+pub fn send_pointer_device_event(
+    mut evt: PointerDeviceEvent,
+    alt: bool,
+    ctrl: bool,
+    shift: bool,
+    command: bool,
+    interface: &impl Interface,
+) {
+    let mut msg_out = Message::new();
+    if alt {
+        evt.modifiers.push(ControlKey::Alt.into());
+    }
+    if shift {
+        evt.modifiers.push(ControlKey::Shift.into());
+    }
+    if ctrl {
+        evt.modifiers.push(ControlKey::Control.into());
+    }
+    if command {
+        evt.modifiers.push(ControlKey::Meta.into());
+    }
+    msg_out.set_pointer_device_event(evt);
+    interface.send(Data::Message(msg_out));
+}
+
 /// Activate OS by sending mouse movement.
 ///
 /// # Arguments
@@ -2039,7 +2126,13 @@ struct LoginErrorMsgBox {
 lazy_static::lazy_static! {
     static ref LOGIN_ERROR_MAP: Arc<HashMap<&'static str, LoginErrorMsgBox>> = {
         use hbb_common::config::LINK_HEADLESS_LINUX_SUPPORT;
-        let map = HashMap::from([(LOGIN_MSG_DESKTOP_SESSION_NOT_READY, LoginErrorMsgBox{
+        let map = HashMap::from([(LOGIN_SCREEN_WAYLAND, LoginErrorMsgBox{
+            msgtype: "error",
+            title: "Login Error",
+            text: "Login screen using Wayland is not supported",
+            link: "https://rustdesk.com/docs/en/manual/linux/#login-screen",
+            try_again: true,
+        }), (LOGIN_MSG_DESKTOP_SESSION_NOT_READY, LoginErrorMsgBox{
             msgtype: "session-login",
             title: "",
             text: "",
@@ -2099,6 +2192,7 @@ pub fn handle_login_error(
     err: &str,
     interface: &impl Interface,
 ) -> bool {
+    lc.write().unwrap().save_ab_password_to_recent = false;
     if err == LOGIN_MSG_PASSWORD_EMPTY {
         lc.write().unwrap().password = Default::default();
         interface.msgbox("input-password", "Password Required", "", "");
@@ -2167,6 +2261,26 @@ pub async fn handle_hash(
     if password.is_empty() {
         password = lc.read().unwrap().config.password.clone();
     }
+    if password.is_empty() {
+        let access_token = LocalConfig::get_option("access_token");
+        let ab = hbb_common::config::Ab::load();
+        if !access_token.is_empty() && access_token == ab.access_token {
+            let id = lc.read().unwrap().id.clone();
+            if let Some(p) = ab
+                .peers
+                .iter()
+                .find_map(|p| if p.id == id { Some(p) } else { None })
+            {
+                if let Ok(hash) = base64::decode(p.hash.clone(), base64::Variant::Original) {
+                    if !hash.is_empty() {
+                        password = hash;
+                        lc.write().unwrap().save_ab_password_to_recent = true;
+                    }
+                }
+            }
+        }
+    }
+    lc.write().unwrap().password = password.clone();
     let password = if password.is_empty() {
         // login without password, the remote side can click accept
         interface.msgbox("input-password", "Password Required", "", "");
@@ -2238,9 +2352,9 @@ pub async fn handle_login_from_ui(
         hasher.update(&lc.read().unwrap().hash.salt);
         let res = hasher.finalize();
         lc.write().unwrap().remember = remember;
-        lc.write().unwrap().password = res[..].into();
         res[..].into()
     };
+    lc.write().unwrap().password = hash_password.clone();
     let mut hasher2 = Sha256::new();
     hasher2.update(&hash_password[..]);
     hasher2.update(&lc.read().unwrap().hash.challenge);
@@ -2276,7 +2390,7 @@ pub trait Interface: Send + Clone + 'static + Sized {
     fn send(&self, data: Data);
     fn msgbox(&self, msgtype: &str, title: &str, text: &str, link: &str);
     fn handle_login_error(&mut self, err: &str) -> bool;
-    fn handle_peer_info(&mut self, pi: PeerInfo);
+    fn handle_peer_info(&mut self, pi: PeerInfo, is_cached_pi: bool);
     fn on_error(&self, err: &str) {
         self.msgbox("error", "Error", err, "");
     }

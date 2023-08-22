@@ -111,6 +111,26 @@ message LoginResponse {
   }
 }
 
+message TouchScaleUpdate {
+  // The delta scale factor relative to the previous scale.
+  // delta * 1000
+  // 0 means scale end
+  int32 scale = 1;
+}
+
+message TouchEvent {
+  oneof union {
+    TouchScaleUpdate scale_update = 1;
+  }
+}
+
+message PointerDeviceEvent {
+  oneof union {
+    TouchEvent touch_event = 1;
+  }
+  repeated ControlKey modifiers = 2;
+}
+
 message MouseEvent {
   int32 mask = 1;
   sint32 x = 2;
@@ -642,6 +662,9 @@ message Misc {
     Resolution change_resolution = 24;
     PluginRequest plugin_request = 25;
     PluginFailure plugin_failure = 26;
+    uint32 full_speed_fps = 27;
+    uint32 auto_adjust_fps = 28;
+    bool client_record_status = 29;
   }
 }
 
@@ -682,5 +705,6 @@ message Message {
     VoiceCallRequest voice_call_request = 23;
     VoiceCallResponse voice_call_response = 24;
     PeerInfo peer_info = 25;
+    PointerDeviceEvent pointer_device_event = 26;
   }
 }

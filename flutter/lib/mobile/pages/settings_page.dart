@@ -242,7 +242,7 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
         },
       ),
       SettingsTile.switchTile(
-        title: Text('${translate('Adaptive Bitrate')} (beta)'),
+        title: Text('${translate('Adaptive bitrate')} (beta)'),
         initialValue: _enableAbr,
         onToggle: (v) async {
           await bind.mainSetOption(key: "enable-abr", value: v ? "" : "N");
@@ -392,7 +392,7 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
                 if (gFFI.userModel.userName.value.isEmpty) {
                   loginDialog();
                 } else {
-                  gFFI.userModel.logOut();
+                  logOutConfirmDialog();
                 }
               },
             ),
