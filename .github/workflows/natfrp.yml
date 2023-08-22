@@ -6,12 +6,14 @@ on:
       tag:
         type: string
         description: 'Tag to build, blank for edge build'
+      version:
+        type: string
+        description: 'Version string in filename'
 
 env:
   LLVM_VERSION: "15.0.6"
   FLUTTER_VERSION: "3.10.5"
   FLUTTER_RUST_BRIDGE_VERSION: "1.75.3"
-  VERSION: "1.2.1"
 
 jobs:
   build-for-windows-flutter:
@@ -99,7 +101,7 @@ jobs:
           python3 ./generate.py -f ../../flutter/build/windows/runner/Release/ -o . -e ../../flutter/build/windows/runner/Release/rustdesk.exe
           popd
           mkdir -p ./SignOutput
-          mv ./target/release/rustdesk-portable-packer.exe ./SignOutput/rustdesk-natfrp-${{ env.VERSION }}-x86_64.exe
+          mv ./target/release/rustdesk-portable-packer.exe ./SignOutput/rustdesk-natfrp-${{ inputs.version }}-x86_64.exe
 
       # TODO: figure out a way to sign binaries with hardware key
 
