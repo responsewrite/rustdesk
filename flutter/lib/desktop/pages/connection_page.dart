@@ -7,7 +7,6 @@ import 'dart:io';
 import 'package:auto_size_text/auto_size_text.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_hbb/consts.dart';
-import 'package:flutter_hbb/desktop/widgets/scroll_wrapper.dart';
 import 'package:flutter_hbb/models/state_model.dart';
 import 'package:get/get.dart';
 import 'package:url_launcher/url_launcher_string.dart';
@@ -32,9 +31,6 @@ class _ConnectionPageState extends State<ConnectionPage>
     with SingleTickerProviderStateMixin, WindowListener {
   /// Controller for the id input bar.
   final _idController = IDTextEditingController();
-
-  /// Nested scroll controller
-  final _scrollController = ScrollController();
 
   Timer? _updateTimer;
 
@@ -106,7 +102,8 @@ class _ConnectionPageState extends State<ConnectionPage>
   @override
   void onWindowLeaveFullScreen() {
     // Restore edge border to default edge size.
-    stateGlobal.resizeEdgeSize.value = kWindowEdgeSize;
+    stateGlobal.resizeEdgeSize.value =
+        stateGlobal.isMaximized.isTrue ? kMaximizeEdgeSize : kWindowEdgeSize;
   }
 
   @override
@@ -120,30 +117,18 @@ class _ConnectionPageState extends State<ConnectionPage>
     return Column(
       children: [
         Expanded(
-          child: DesktopScrollWrapper(
-            scrollController: _scrollController,
-            child: CustomScrollView(
-              controller: _scrollController,
-              physics: DraggableNeverScrollableScrollPhysics(),
-              slivers: [
-                SliverList(
-                    delegate: SliverChildListDelegate([
-                  Row(
-                    children: [
-                      Flexible(child: _buildRemoteIDTextField(context)),
-                    ],
-                  ).marginOnly(top: 22),
-                  SizedBox(height: 12),
-                  Divider().paddingOnly(right: 12),
-                ])),
-                SliverFillRemaining(
-                  hasScrollBody: false,
-                  child: PeerTabPage().paddingOnly(right: 12.0),
-                )
+            child: Column(
+          children: [
+            Row(
+              children: [
+                Flexible(child: _buildRemoteIDTextField(context)),
               ],
-            ).paddingOnly(left: 12.0),
-          ),
-        ),
+            ).marginOnly(top: 22),
+            SizedBox(height: 12),
+            Divider().paddingOnly(right: 12),
+            Expanded(child: PeerTabPage()),
+          ],
+        ).paddingOnly(left: 12.0)),
         const Divider(height: 1),
         buildStatus()
       ],

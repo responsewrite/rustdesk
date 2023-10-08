@@ -1,9 +1,9 @@
 import 'dart:async';
 
-import 'package:debounce_throttle/debounce_throttle.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hbb/common/shared_state.dart';
+import 'package:flutter_hbb/common/widgets/setting_widgets.dart';
 import 'package:get/get.dart';
 
 import '../../common.dart';
@@ -293,6 +293,53 @@ Future<String> changeDirectAccessPort(
         dialogButton("OK", onPressed: () async {
           await bind.mainSetOption(
               key: 'direct-access-port', value: controller.text);
+          close();
+        }),
+      ],
+      onCancel: close,
+    );
+  });
+  return controller.text;
+}
+
+Future<String> changeAutoDisconnectTimeout(String old) async {
+  final controller = TextEditingController(text: old);
+  await gFFI.dialogManager.show((setState, close, context) {
+    return CustomAlertDialog(
+      title: Text(translate("Timeout in minutes")),
+      content: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SizedBox(height: 8.0),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                    maxLines: null,
+                    keyboardType: TextInputType.number,
+                    decoration: InputDecoration(
+                        hintText: '10',
+                        isCollapsed: true,
+                        suffix: IconButton(
+                            padding: EdgeInsets.zero,
+                            icon: const Icon(Icons.clear, size: 16),
+                            onPressed: () => controller.clear())),
+                    inputFormatters: [
+                      FilteringTextInputFormatter.allow(RegExp(
+                          r'^([0-9]|[1-9]\d|[1-9]\d{2}|[1-9]\d{3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5])$')),
+                    ],
+                    controller: controller,
+                    autofocus: true),
+              ),
+            ],
+          ),
+        ],
+      ),
+      actions: [
+        dialogButton("Cancel", onPressed: close, isOutline: true),
+        dialogButton("OK", onPressed: () async {
+          await bind.mainSetOption(
+              key: 'auto-disconnect-timeout', value: controller.text);
           close();
         }),
       ],
@@ -664,6 +711,13 @@ void showWaitUacDialog(
       (setState, close, context) => CustomAlertDialog(
             title: null,
             content: msgboxContent(type, 'Wait', 'wait_accept_uac_tip'),
+            actions: [
+              dialogButton(
+                'OK',
+                icon: Icon(Icons.done_rounded),
+                onPressed: close,
+              ),
+            ],
           ));
 }
 
@@ -812,6 +866,8 @@ void showRequestElevationDialog(
       } else {
         bind.sessionElevateDirect(sessionId: sessionId);
       }
+      close();
+      showWaitUacDialog(sessionId, dialogManager, "wait-uac");
     }
 
     return CustomAlertDialog(
@@ -882,7 +938,7 @@ void showElevationError(SessionID sessionId, String type, String title,
         dialogButton('Cancel', onPressed: () {
           close();
         }, isOutline: true),
-        dialogButton('Retry', onPressed: submit),
+        if (text != 'No permission') dialogButton('Retry', onPressed: submit),
       ],
       onSubmit: submit,
       onCancel: close,
@@ -1223,76 +1279,9 @@ customImageQualityDialog(SessionID sessionId, String id, FFI ffi) async {
   final quality = await bind.sessionGetCustomImageQuality(sessionId: sessionId);
   qualityInitValue =
       quality != null && quality.isNotEmpty ? quality[0].toDouble() : 50.0;
-  const qualityMinValue = 10.0;
-  const qualityMoreThresholdValue = 100.0;
-  const qualityMaxValue = 2000.0;
-  if (qualityInitValue < qualityMinValue) {
-    qualityInitValue = qualityMinValue;
+  if (qualityInitValue < 10 || qualityInitValue > 2000) {
+    qualityInitValue = 50;
   }
-  if (qualityInitValue > qualityMaxValue) {
-    qualityInitValue = qualityMaxValue;
-  }
-  final RxDouble qualitySliderValue = RxDouble(qualityInitValue);
-  final moreQualityInitValue = qualityInitValue > qualityMoreThresholdValue;
-  final RxBool moreQualityChecked = RxBool(moreQualityInitValue);
-  final debouncerQuality = Debouncer<double>(
-    Duration(milliseconds: 1000),
-    onChanged: (double v) {
-      setCustomValues(quality: v);
-    },
-    initialValue: qualityInitValue,
-  );
-  final qualitySlider = Obx(() => Row(
-        children: [
-          Expanded(
-              flex: 3,
-              child: Slider(
-                value: qualitySliderValue.value,
-                min: qualityMinValue,
-                max: moreQualityChecked.value
-                    ? qualityMaxValue
-                    : qualityMoreThresholdValue,
-                divisions: 18,
-                onChanged: (double value) {
-                  qualitySliderValue.value = value;
-                  debouncerQuality.value = value;
-                },
-              )),
-          Expanded(
-              flex: 1,
-              child: Text(
-                '${qualitySliderValue.value.round()}%',
-                style: const TextStyle(fontSize: 15),
-              )),
-          Expanded(
-              flex: 1,
-              child: Text(
-                translate('Bitrate'),
-                style: const TextStyle(fontSize: 15),
-              )),
-          Expanded(
-              flex: 1,
-              child: Row(
-                children: [
-                  Checkbox(
-                    value: moreQualityChecked.value,
-                    onChanged: (bool? value) {
-                      moreQualityChecked.value = value!;
-                      if (!value &&
-                          qualitySliderValue.value >
-                              qualityMoreThresholdValue) {
-                        qualitySliderValue.value = qualityMoreThresholdValue;
-                        debouncerQuality.value = qualityMoreThresholdValue;
-                      }
-                    },
-                  ).marginOnly(right: 5),
-                  Expanded(
-                    child: Text(translate('More')),
-                  )
-                ],
-              )),
-        ],
-      ));
   // fps
   final fpsOption =
       await bind.sessionGetOption(sessionId: sessionId, arg: 'custom-fps');
@@ -1300,55 +1289,20 @@ customImageQualityDialog(SessionID sessionId, String id, FFI ffi) async {
   if (fpsInitValue < 5 || fpsInitValue > 120) {
     fpsInitValue = 30;
   }
-  final RxDouble fpsSliderValue = RxDouble(fpsInitValue);
-  final debouncerFps = Debouncer<double>(
-    Duration(milliseconds: 1000),
-    onChanged: (double v) {
-      setCustomValues(fps: v);
-    },
-    initialValue: qualityInitValue,
-  );
   bool? direct;
   try {
     direct =
         ConnectionTypeState.find(id).direct.value == ConnectionType.strDirect;
   } catch (_) {}
-  final fpsSlider = Offstage(
-    offstage: (await bind.mainIsUsingPublicServer() && direct != true) ||
-        version_cmp(ffi.ffiModel.pi.version, '1.2.0') < 0,
-    child: Row(
-      children: [
-        Expanded(
-            flex: 3,
-            child: Obx((() => Slider(
-                  value: fpsSliderValue.value,
-                  min: 5,
-                  max: 120,
-                  divisions: 23,
-                  onChanged: (double value) {
-                    fpsSliderValue.value = value;
-                    debouncerFps.value = value;
-                  },
-                )))),
-        Expanded(
-            flex: 1,
-            child: Obx(() => Text(
-                  '${fpsSliderValue.value.round()}',
-                  style: const TextStyle(fontSize: 15),
-                ))),
-        Expanded(
-            flex: 2,
-            child: Text(
-              translate('FPS'),
-              style: const TextStyle(fontSize: 15),
-            ))
-      ],
-    ),
-  );
+  bool notShowFps = (await bind.mainIsUsingPublicServer() && direct != true) ||
+      version_cmp(ffi.ffiModel.pi.version, '1.2.0') < 0;
 
-  final content = Column(
-    children: [qualitySlider, fpsSlider],
-  );
+  final content = customImageQualityWidget(
+      initQuality: qualityInitValue,
+      initFps: fpsInitValue,
+      setQuality: (v) => setCustomValues(quality: v),
+      setFps: (v) => setCustomValues(fps: v),
+      showFps: !notShowFps);
   msgBoxCommon(ffi.dialogManager, 'Custom Image Quality', content, [btnClose]);
 }
 

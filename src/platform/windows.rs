@@ -1269,9 +1269,15 @@ pub fn toggle_blank_screen(v: bool) {
     }
 }
 
-pub fn block_input(v: bool) -> bool {
+pub fn block_input(v: bool) -> (bool, String) {
     let v = if v { TRUE } else { FALSE };
-    unsafe { BlockInput(v) == TRUE }
+    unsafe {
+        if BlockInput(v) == TRUE {
+            (true, "".to_owned())
+        } else {
+            (false, format!("Error code: {}", GetLastError()))
+        }
+    }
 }
 
 pub fn add_recent_document(path: &str) {
@@ -1581,29 +1587,6 @@ pub fn is_elevated(process_id: Option<DWORD>) -> ResultType<bool> {
     }
 }
 
-#[inline]
-fn filter_foreground_window(process_id: DWORD) -> ResultType<bool> {
-    if let Ok(output) = std::process::Command::new("tasklist")
-        .args(vec![
-            "/SVC",
-            "/NH",
-            "/FI",
-            &format!("PID eq {}", process_id),
-        ])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-    {
-        let s = String::from_utf8_lossy(&output.stdout)
-            .to_string()
-            .to_lowercase();
-        Ok(["Taskmgr", "mmc", "regedit"]
-            .iter()
-            .any(|name| s.contains(&name.to_string().to_lowercase())))
-    } else {
-        bail!("run tasklist failed");
-    }
-}
-
 pub fn is_foreground_window_elevated() -> ResultType<bool> {
     unsafe {
         let mut process_id: DWORD = 0;
@@ -1611,12 +1594,7 @@ pub fn is_foreground_window_elevated() -> ResultType<bool> {
         if process_id == 0 {
             bail!("Failed to get processId, errno {}", GetLastError())
         }
-        let elevated = is_elevated(Some(process_id))?;
-        if elevated {
-            filter_foreground_window(process_id)
-        } else {
-            Ok(false)
-        }
+        is_elevated(Some(process_id))
     }
 }
 
@@ -2167,6 +2145,7 @@ pub fn uninstall_service(show_new_window: bool) -> bool {
 
 pub fn install_service() -> bool {
     log::info!("Installing service...");
+    let _installing = crate::platform::InstallingService::new();
     let (_, _, _, exe) = get_install_info();
     let tmp_path = std::env::temp_dir().to_string_lossy().to_string();
     let tray_shortcut = get_tray_shortcut(&exe, &tmp_path).unwrap_or_default();

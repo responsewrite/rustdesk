@@ -1,11 +1,9 @@
 import 'dart:io';
 
-import 'package:bot_toast/bot_toast.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hbb/common/widgets/dialog.dart';
 import 'package:flutter_hbb/consts.dart';
-import 'package:flutter_hbb/models/ab_model.dart';
 import 'package:flutter_hbb/models/peer_tab_model.dart';
 import 'package:get/get.dart';
 import 'package:provider/provider.dart';
@@ -63,75 +61,29 @@ class _PeerCardState extends State<_PeerCard>
 
   Widget _buildMobile() {
     final peer = super.widget.peer;
-    final name =
-        '${peer.username}${peer.username.isNotEmpty && peer.hostname.isNotEmpty ? '@' : ''}${peer.hostname}';
     final PeerTabModel peerTabModel = Provider.of(context);
-    final child = Card(
+    return Card(
         margin: EdgeInsets.symmetric(horizontal: 2),
         child: GestureDetector(
-            onTap: () {
-              if (peerTabModel.multiSelectionMode) {
-                peerTabModel.select(peer);
-              } else {
-                if (!isWebDesktop) {
-                  connectInPeerTab(context, peer.id, widget.tab);
-                }
-              }
-            },
-            onDoubleTap: isWebDesktop
-                ? () => connectInPeerTab(context, peer.id, widget.tab)
-                : null,
-            onLongPress: () {
+          onTap: () {
+            if (peerTabModel.multiSelectionMode) {
               peerTabModel.select(peer);
-            },
-            child: Container(
+            } else {
+              if (!isWebDesktop) {
+                connectInPeerTab(context, peer.id, widget.tab);
+              }
+            }
+          },
+          onDoubleTap: isWebDesktop
+              ? () => connectInPeerTab(context, peer.id, widget.tab)
+              : null,
+          onLongPress: () {
+            peerTabModel.select(peer);
+          },
+          child: Container(
               padding: EdgeInsets.only(left: 12, top: 8, bottom: 8),
-              child: Row(
-                children: [
-                  Container(
-                      width: 50,
-                      height: 50,
-                      decoration: BoxDecoration(
-                        color: str2color('${peer.id}${peer.platform}', 0x7f),
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      padding: const EdgeInsets.all(6),
-                      child: getPlatformImage(peer.platform)),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(children: [
-                          getOnline(4, peer.online),
-                          Text(peer.alias.isEmpty
-                              ? formatID(peer.id)
-                              : peer.alias)
-                        ]),
-                        Text(name)
-                      ],
-                    ).paddingOnly(left: 8.0),
-                  ),
-                  checkBoxOrActionMoreMobile(peer),
-                ],
-              ),
-            )));
-    final colors = _frontN(peer.tags, 25).map((e) => str2color2(e)).toList();
-    return Tooltip(
-      message: peer.tags.isNotEmpty
-          ? '${translate('Tags')}: ${peer.tags.join(', ')}'
-          : '',
-      child: Stack(children: [
-        child,
-        if (colors.isNotEmpty)
-          Positioned(
-            top: 2,
-            right: 10,
-            child: CustomPaint(
-              painter: TagPainter(radius: 3, colors: colors),
-            ),
-          )
-      ]),
-    );
+              child: _buildPeerTile(context, peer, null)),
+        ));
   }
 
   Widget _buildDesktop() {
@@ -178,87 +130,96 @@ class _PeerCardState extends State<_PeerCard>
   }
 
   Widget _buildPeerTile(
-      BuildContext context, Peer peer, Rx<BoxDecoration?> deco) {
+      BuildContext context, Peer peer, Rx<BoxDecoration?>? deco) {
     final name =
         '${peer.username}${peer.username.isNotEmpty && peer.hostname.isNotEmpty ? '@' : ''}${peer.hostname}';
     final greyStyle = TextStyle(
         fontSize: 11,
         color: Theme.of(context).textTheme.titleLarge?.color?.withOpacity(0.6));
-    final child = Obx(
-      () => Container(
-        foregroundDecoration: deco.value,
-        child: Row(
-          mainAxisSize: MainAxisSize.max,
-          children: [
-            Container(
-              decoration: BoxDecoration(
-                color: str2color('${peer.id}${peer.platform}', 0x7f),
-                borderRadius: BorderRadius.only(
-                  topLeft: Radius.circular(_tileRadius),
-                  bottomLeft: Radius.circular(_tileRadius),
-                ),
-              ),
-              alignment: Alignment.center,
-              width: 42,
-              child: getPlatformImage(peer.platform, size: 30).paddingAll(6),
-            ),
-            Expanded(
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.background,
-                  borderRadius: BorderRadius.only(
-                    topRight: Radius.circular(_tileRadius),
-                    bottomRight: Radius.circular(_tileRadius),
+    final child = Row(
+      mainAxisSize: MainAxisSize.max,
+      children: [
+        Container(
+          decoration: BoxDecoration(
+            color: str2color('${peer.id}${peer.platform}', 0x7f),
+            borderRadius: isMobile
+                ? BorderRadius.circular(_tileRadius)
+                : BorderRadius.only(
+                    topLeft: Radius.circular(_tileRadius),
+                    bottomLeft: Radius.circular(_tileRadius),
                   ),
-                ),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        children: [
-                          Row(children: [
-                            getOnline(8, peer.online),
-                            Expanded(
-                                child: Text(
-                              peer.alias.isEmpty
-                                  ? formatID(peer.id)
-                                  : peer.alias,
-                              overflow: TextOverflow.ellipsis,
-                              style: Theme.of(context).textTheme.titleSmall,
-                            )),
-                          ]).marginOnly(bottom: 0, top: 2),
-                          Align(
-                            alignment: Alignment.centerLeft,
-                            child: Text(
-                              name,
-                              style: greyStyle,
-                              textAlign: TextAlign.start,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        ],
-                      ).marginOnly(top: 2),
-                    ),
-                    checkBoxOrActionMoreDesktop(peer, isTile: true),
-                  ],
-                ).paddingOnly(left: 10.0, top: 3.0),
-              ),
-            )
-          ],
+          ),
+          alignment: Alignment.center,
+          width: isMobile ? 50 : 42,
+          height: isMobile ? 50 : null,
+          child: getPlatformImage(peer.platform, size: isMobile ? 38 : 30)
+              .paddingAll(6),
         ),
-      ),
+        Expanded(
+          child: Container(
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.background,
+              borderRadius: BorderRadius.only(
+                topRight: Radius.circular(_tileRadius),
+                bottomRight: Radius.circular(_tileRadius),
+              ),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    children: [
+                      Row(children: [
+                        getOnline(isMobile ? 4 : 8, peer.online),
+                        Expanded(
+                            child: Text(
+                          peer.alias.isEmpty ? formatID(peer.id) : peer.alias,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.titleSmall,
+                        )),
+                      ]).marginOnly(top: isMobile ? 0 : 2),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          name,
+                          style: isMobile ? null : greyStyle,
+                          textAlign: TextAlign.start,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ).marginOnly(top: 2),
+                ),
+                isMobile
+                    ? checkBoxOrActionMoreMobile(peer)
+                    : checkBoxOrActionMoreDesktop(peer, isTile: true),
+              ],
+            ).paddingOnly(left: 10.0, top: 3.0),
+          ),
+        )
+      ],
     );
-    final colors = _frontN(peer.tags, 25).map((e) => str2color2(e)).toList();
+    final colors =
+        _frontN(peer.tags, 25).map((e) => gFFI.abModel.getTagColor(e)).toList();
     return Tooltip(
-      message: peer.tags.isNotEmpty
-          ? '${translate('Tags')}: ${peer.tags.join(', ')}'
-          : '',
+      message: isMobile
+          ? ''
+          : peer.tags.isNotEmpty
+              ? '${translate('Tags')}: ${peer.tags.join(', ')}'
+              : '',
       child: Stack(children: [
-        child,
+        deco == null
+            ? child
+            : Obx(
+                () => Container(
+                  foregroundDecoration: deco.value,
+                  child: child,
+                ),
+              ),
         if (colors.isNotEmpty)
           Positioned(
             top: 2,
-            right: 10,
+            right: isMobile ? 20 : 10,
             child: CustomPaint(
               painter: TagPainter(radius: 3, colors: colors),
             ),
@@ -349,7 +310,8 @@ class _PeerCardState extends State<_PeerCard>
       ),
     );
 
-    final colors = _frontN(peer.tags, 25).map((e) => str2color2(e)).toList();
+    final colors =
+        _frontN(peer.tags, 25).map((e) => gFFI.abModel.getTagColor(e)).toList();
     return Tooltip(
       message: peer.tags.isNotEmpty
           ? '${translate('Tags')}: ${peer.tags.join(', ')}'
@@ -765,17 +727,18 @@ abstract class BasePeerCard extends StatelessWidget {
   MenuEntryBase<String> _unrememberPasswordAction(String id) {
     return MenuEntryButton<String>(
       childBuilder: (TextStyle? style) => Text(
-        translate('Unremember Password'),
+        translate('Forget Password'),
         style: style,
       ),
       proc: () async {
         bool result = gFFI.abModel.changePassword(id, '');
         await bind.mainForgetPassword(id: id);
+        bool toast = false;
         if (result) {
-          bool toast = tab == PeerTabIndex.ab;
+          toast = tab == PeerTabIndex.ab;
           gFFI.abModel.pushAb(toastIfFail: toast, toastIfSucc: toast);
         }
-        showToast(translate('Successful'));
+        if (!toast) showToast(translate('Successful'));
       },
       padding: menuPadding,
       dismissOnClicked: true,
@@ -900,12 +863,12 @@ class RecentPeerCard extends BasePeerCard {
 
     final List favs = (await bind.mainGetFav()).toList();
 
-    if (isDesktop && peer.platform != 'Android') {
+    if (isDesktop && peer.platform != kPeerPlatformAndroid) {
       menuItems.add(_tcpTunnelingAction(context, peer.id));
     }
     // menuItems.add(await _openNewConnInOptAction(peer.id));
     menuItems.add(await _forceAlwaysRelayAction(peer.id));
-    if (peer.platform == 'Windows') {
+    if (Platform.isWindows && peer.platform == kPeerPlatformWindows) {
       menuItems.add(_rdpAction(context, peer.id));
     }
     if (Platform.isWindows) {
@@ -954,12 +917,12 @@ class FavoritePeerCard extends BasePeerCard {
       _connectAction(context, peer),
       _transferFileAction(context, peer.id),
     ];
-    if (isDesktop && peer.platform != 'Android') {
+    if (isDesktop && peer.platform != kPeerPlatformAndroid) {
       menuItems.add(_tcpTunnelingAction(context, peer.id));
     }
     // menuItems.add(await _openNewConnInOptAction(peer.id));
     menuItems.add(await _forceAlwaysRelayAction(peer.id));
-    if (peer.platform == 'Windows') {
+    if (Platform.isWindows && peer.platform == kPeerPlatformWindows) {
       menuItems.add(_rdpAction(context, peer.id));
     }
     if (Platform.isWindows) {
@@ -1008,12 +971,12 @@ class DiscoveredPeerCard extends BasePeerCard {
 
     final List favs = (await bind.mainGetFav()).toList();
 
-    if (isDesktop && peer.platform != 'Android') {
+    if (isDesktop && peer.platform != kPeerPlatformAndroid) {
       menuItems.add(_tcpTunnelingAction(context, peer.id));
     }
     // menuItems.add(await _openNewConnInOptAction(peer.id));
     menuItems.add(await _forceAlwaysRelayAction(peer.id));
-    if (peer.platform == 'Windows') {
+    if (Platform.isWindows && peer.platform == kPeerPlatformWindows) {
       menuItems.add(_rdpAction(context, peer.id));
     }
     menuItems.add(_wolAction(peer.id));
@@ -1058,12 +1021,12 @@ class AddressBookPeerCard extends BasePeerCard {
       _connectAction(context, peer),
       _transferFileAction(context, peer.id),
     ];
-    if (isDesktop && peer.platform != 'Android') {
+    if (isDesktop && peer.platform != kPeerPlatformAndroid) {
       menuItems.add(_tcpTunnelingAction(context, peer.id));
     }
     // menuItems.add(await _openNewConnInOptAction(peer.id));
     menuItems.add(await _forceAlwaysRelayAction(peer.id));
-    if (peer.platform == 'Windows') {
+    if (Platform.isWindows && peer.platform == kPeerPlatformWindows) {
       menuItems.add(_rdpAction(context, peer.id));
     }
     if (Platform.isWindows) {
@@ -1126,21 +1089,26 @@ class MyGroupPeerCard extends BasePeerCard {
       _connectAction(context, peer),
       _transferFileAction(context, peer.id),
     ];
-    if (isDesktop && peer.platform != 'Android') {
+    if (isDesktop && peer.platform != kPeerPlatformAndroid) {
       menuItems.add(_tcpTunnelingAction(context, peer.id));
     }
     // menuItems.add(await _openNewConnInOptAction(peer.id));
-    menuItems.add(await _forceAlwaysRelayAction(peer.id));
-    if (peer.platform == 'Windows') {
+    // menuItems.add(await _forceAlwaysRelayAction(peer.id));
+    if (Platform.isWindows && peer.platform == kPeerPlatformWindows) {
       menuItems.add(_rdpAction(context, peer.id));
     }
     if (Platform.isWindows) {
       menuItems.add(_createShortCutAction(peer.id));
     }
-    menuItems.add(MenuEntryDivider());
-    menuItems.add(_renameAction(peer.id));
-    if (await bind.mainPeerHasPassword(id: peer.id)) {
-      menuItems.add(_unrememberPasswordAction(peer.id));
+    // menuItems.add(MenuEntryDivider());
+    // menuItems.add(_renameAction(peer.id));
+    // if (await bind.mainPeerHasPassword(id: peer.id)) {
+    //   menuItems.add(_unrememberPasswordAction(peer.id));
+    // }
+    if (gFFI.userModel.userName.isNotEmpty) {
+      if (!gFFI.abModel.idContainBy(peer.id)) {
+        menuItems.add(_addToAb(peer));
+      }
     }
     return menuItems;
   }

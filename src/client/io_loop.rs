@@ -106,7 +106,7 @@ impl<T: InvokeUiSession> Remote<T> {
         }
     }
 
-    pub async fn io_loop(&mut self, key: &str, token: &str) {
+    pub async fn io_loop(&mut self, key: &str, token: &str, round: u32) {
         let mut last_recv_time = Instant::now();
         let mut received = false;
         let conn_type = if self.handler.is_file_transfer() {
@@ -125,18 +125,12 @@ impl<T: InvokeUiSession> Remote<T> {
         .await
         {
             Ok((mut peer, direct, pk)) => {
-                let is_secured = peer.is_secured();
-                #[cfg(feature = "flutter")]
-                #[cfg(not(any(target_os = "android", target_os = "ios")))]
-                {
-                    self.handler
-                        .cache_flutter
-                        .write()
-                        .unwrap()
-                        .is_secured_direct
-                        .replace((is_secured, direct));
-                }
-                self.handler.set_connection_type(is_secured, direct); // flutter -> connection_ready
+                self.handler
+                    .connection_round_state
+                    .lock()
+                    .unwrap()
+                    .set_connected();
+                self.handler.set_connection_type(peer.is_secured(), direct); // flutter -> connection_ready
                 self.handler.update_direct(Some(direct));
                 if conn_type == ConnType::DEFAULT_CONN {
                     self.handler
@@ -256,11 +250,21 @@ impl<T: InvokeUiSession> Remote<T> {
                 self.handler.on_establish_connection_error(err.to_string());
             }
         }
+        // set_disconnected_ok is used to check if new connection round is started.
+        let _set_disconnected_ok = self
+            .handler
+            .connection_round_state
+            .lock()
+            .unwrap()
+            .set_disconnected(round);
+
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
-        Client::try_stop_clipboard(&self.handler.session_id);
+        if _set_disconnected_ok {
+            Client::try_stop_clipboard(&self.handler.session_id);
+        }
 
         #[cfg(windows)]
-        {
+        if _set_disconnected_ok {
             let conn_id = self.client_conn_id;
             ContextSend::proc(|context: &mut CliprdrClientContext| -> u32 {
                 empty_clipboard(context, conn_id);
@@ -494,9 +498,13 @@ impl<T: InvokeUiSession> Remote<T> {
                                 // peer is not windows, need transform \ to /
                                 fs::transform_windows_path(&mut files);
                             }
+                            let total_size = job.total_size();
                             self.read_jobs.push(job);
                             self.timer = time::interval(MILLI1);
-                            allow_err!(peer.send(&fs::new_receive(id, to, file_num, files)).await);
+                            allow_err!(
+                                peer.send(&fs::new_receive(id, to, file_num, files, total_size))
+                                    .await
+                            );
                         }
                     }
                 }
@@ -579,7 +587,8 @@ impl<T: InvokeUiSession> Remote<T> {
                                 id,
                                 job.path.to_string_lossy().to_string(),
                                 job.file_num,
-                                job.files.clone()
+                                job.files.clone(),
+                                job.total_size(),
                             ))
                             .await
                         );
@@ -807,7 +816,7 @@ impl<T: InvokeUiSession> Remote<T> {
         job: &fs::TransferJob,
         elapsed: i32,
         last_update_jobs_status: &mut (Instant, HashMap<i32, u64>),
-        handler: &mut Session<T>,
+        handler: &Session<T>,
     ) {
         if elapsed <= 0 {
             return;
@@ -834,7 +843,7 @@ impl<T: InvokeUiSession> Remote<T> {
                     job,
                     elapsed,
                     &mut self.last_update_jobs_status,
-                    &mut self.handler,
+                    &self.handler,
                 );
             }
             for job in self.write_jobs.iter() {
@@ -1021,12 +1030,7 @@ impl<T: InvokeUiSession> Remote<T> {
                         }
                     }
                     Some(login_response::Union::PeerInfo(pi)) => {
-                        #[cfg(feature = "flutter")]
-                        #[cfg(not(any(target_os = "android", target_os = "ios")))]
-                        {
-                            self.handler.cache_flutter.write().unwrap().pi = pi.clone();
-                        }
-                        self.handler.handle_peer_info(pi, false);
+                        self.handler.handle_peer_info(pi);
                         #[cfg(not(feature = "flutter"))]
                         self.check_clipboard_file_context();
                         if !(self.handler.is_file_transfer() || self.handler.is_port_forward()) {
@@ -1073,22 +1077,9 @@ impl<T: InvokeUiSession> Remote<T> {
                     _ => {}
                 },
                 Some(message::Union::CursorData(cd)) => {
-                    #[cfg(feature = "flutter")]
-                    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-                    {
-                        let mut lock = self.handler.cache_flutter.write().unwrap();
-                        if !lock.cursor_data.contains_key(&cd.id) {
-                            lock.cursor_data.insert(cd.id, cd.clone());
-                        }
-                    }
                     self.handler.set_cursor_data(cd);
                 }
                 Some(message::Union::CursorId(id)) => {
-                    #[cfg(feature = "flutter")]
-                    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-                    {
-                        self.handler.cache_flutter.write().unwrap().cursor_id = id;
-                    }
                     self.handler.set_cursor_id(id.to_string());
                 }
                 Some(message::Union::CursorPosition(cp)) => {
@@ -1305,16 +1296,6 @@ impl<T: InvokeUiSession> Remote<T> {
                         }
                     }
                     Some(misc::Union::SwitchDisplay(s)) => {
-                        #[cfg(feature = "flutter")]
-                        #[cfg(not(any(target_os = "android", target_os = "ios")))]
-                        {
-                            self.handler
-                                .cache_flutter
-                                .write()
-                                .unwrap()
-                                .sp
-                                .replace(s.clone());
-                        }
                         self.handler.handle_peer_switch_display(&s);
                         self.video_sender.send(MediaData::Reset).ok();
                         if s.width > 0 && s.height > 0 {
@@ -1337,9 +1318,10 @@ impl<T: InvokeUiSession> Remote<T> {
                         }
                     }
                     Some(misc::Union::Uac(uac)) => {
+                        let keyboard = self.handler.server_keyboard_enabled.read().unwrap().clone();
                         #[cfg(feature = "flutter")]
                         {
-                            if uac {
+                            if uac && keyboard {
                                 self.handler.msgbox(
                                     "on-uac",
                                     "Prompt",
@@ -1358,7 +1340,7 @@ impl<T: InvokeUiSession> Remote<T> {
                             let title = "Prompt";
                             let text = "Please wait for confirmation of UAC...";
                             let link = "";
-                            if uac {
+                            if uac && keyboard {
                                 self.handler.msgbox(msgtype, title, text, link);
                             } else {
                                 self.handler.cancel_msgbox(&format!(
@@ -1369,9 +1351,10 @@ impl<T: InvokeUiSession> Remote<T> {
                         }
                     }
                     Some(misc::Union::ForegroundWindowElevated(elevated)) => {
+                        let keyboard = self.handler.server_keyboard_enabled.read().unwrap().clone();
                         #[cfg(feature = "flutter")]
                         {
-                            if elevated {
+                            if elevated && keyboard {
                                 self.handler.msgbox(
                                     "on-foreground-elevated",
                                     "Prompt",
@@ -1390,7 +1373,7 @@ impl<T: InvokeUiSession> Remote<T> {
                             let title = "Prompt";
                             let text = "elevated_foreground_window_tip";
                             let link = "";
-                            if elevated {
+                            if elevated && keyboard {
                                 self.handler.msgbox(msgtype, title, text, link);
                             } else {
                                 self.handler.cancel_msgbox(&format!(
@@ -1404,6 +1387,7 @@ impl<T: InvokeUiSession> Remote<T> {
                         if err.is_empty() {
                             self.handler.msgbox("wait-uac", "", "", "");
                         } else {
+                            self.handler.cancel_msgbox("wait-uac");
                             self.handler
                                 .msgbox("elevation-error", "Elevation Error", &err, "");
                         }
@@ -1506,12 +1490,6 @@ impl<T: InvokeUiSession> Remote<T> {
                     }
                 }
                 Some(message::Union::PeerInfo(pi)) => {
-                    #[cfg(feature = "flutter")]
-                    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-                    {
-                        self.handler.cache_flutter.write().unwrap().pi.displays =
-                            pi.displays.clone();
-                    }
                     self.handler.set_displays(&pi.displays);
                 }
                 _ => {}
@@ -1525,6 +1503,7 @@ impl<T: InvokeUiSession> Remote<T> {
             Some(back_notification::Union::BlockInputState(state)) => {
                 self.handle_back_msg_block_input(
                     state.enum_value_or(back_notification::BlockInputState::BlkStateUnknown),
+                    notification.details,
                 )
                 .await;
             }
@@ -1532,6 +1511,7 @@ impl<T: InvokeUiSession> Remote<T> {
                 if !self
                     .handle_back_msg_privacy_mode(
                         state.enum_value_or(back_notification::PrivacyModeState::PrvStateUnknown),
+                        notification.details,
                     )
                     .await
                 {
@@ -1548,22 +1528,42 @@ impl<T: InvokeUiSession> Remote<T> {
         self.handler.update_block_input_state(on);
     }
 
-    async fn handle_back_msg_block_input(&mut self, state: back_notification::BlockInputState) {
+    async fn handle_back_msg_block_input(
+        &mut self,
+        state: back_notification::BlockInputState,
+        details: String,
+    ) {
         match state {
             back_notification::BlockInputState::BlkOnSucceeded => {
                 self.update_block_input_state(true);
             }
             back_notification::BlockInputState::BlkOnFailed => {
-                self.handler
-                    .msgbox("custom-error", "Block user input", "Failed", "");
+                self.handler.msgbox(
+                    "custom-error",
+                    "Block user input",
+                    if details.is_empty() {
+                        "Failed"
+                    } else {
+                        &details
+                    },
+                    "",
+                );
                 self.update_block_input_state(false);
             }
             back_notification::BlockInputState::BlkOffSucceeded => {
                 self.update_block_input_state(false);
             }
             back_notification::BlockInputState::BlkOffFailed => {
-                self.handler
-                    .msgbox("custom-error", "Unblock user input", "Failed", "");
+                self.handler.msgbox(
+                    "custom-error",
+                    "Unblock user input",
+                    if details.is_empty() {
+                        "Failed"
+                    } else {
+                        &details
+                    },
+                    "",
+                );
             }
             _ => {}
         }
@@ -1581,6 +1581,7 @@ impl<T: InvokeUiSession> Remote<T> {
     async fn handle_back_msg_privacy_mode(
         &mut self,
         state: back_notification::PrivacyModeState,
+        details: String,
     ) -> bool {
         match state {
             back_notification::PrivacyModeState::PrvOnByOther => {
@@ -1613,8 +1614,16 @@ impl<T: InvokeUiSession> Remote<T> {
                 self.update_privacy_mode(false);
             }
             back_notification::PrivacyModeState::PrvOnFailed => {
-                self.handler
-                    .msgbox("custom-error", "Privacy mode", "Failed", "");
+                self.handler.msgbox(
+                    "custom-error",
+                    "Privacy mode",
+                    if details.is_empty() {
+                        "Failed"
+                    } else {
+                        &details
+                    },
+                    "",
+                );
                 self.update_privacy_mode(false);
             }
             back_notification::PrivacyModeState::PrvOffSucceeded => {
@@ -1628,8 +1637,16 @@ impl<T: InvokeUiSession> Remote<T> {
                 self.update_privacy_mode(false);
             }
             back_notification::PrivacyModeState::PrvOffFailed => {
-                self.handler
-                    .msgbox("custom-error", "Privacy mode", "Failed to turn off", "");
+                self.handler.msgbox(
+                    "custom-error",
+                    "Privacy mode",
+                    if details.is_empty() {
+                        "Failed to turn off"
+                    } else {
+                        &details
+                    },
+                    "",
+                );
             }
             back_notification::PrivacyModeState::PrvOffUnknown => {
                 self.handler

@@ -6,6 +6,7 @@ import 'package:flutter/gestures.dart';
 
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/common.dart';
+import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/models/model.dart';
 import 'package:flutter_hbb/models/input_model.dart';
 
@@ -92,6 +93,7 @@ class _RawTouchGestureDetectorRegionState
       return;
     }
     if (handleTouch) {
+      // Desktop or mobile "Touch mode"
       ffi.cursorModel.move(d.localPosition.dx, d.localPosition.dy);
       inputModel.tapDown(MouseButtons.left);
     }
@@ -111,7 +113,10 @@ class _RawTouchGestureDetectorRegionState
     if (lastDeviceKind != PointerDeviceKind.touch) {
       return;
     }
-    inputModel.tap(MouseButtons.left);
+    if (!handleTouch) {
+      // Mobile, "Mouse mode"
+      inputModel.tap(MouseButtons.left);
+    }
   }
 
   onDoubleTapDown(TapDownDetails d) {
@@ -263,9 +268,9 @@ class _RawTouchGestureDetectorRegionState
       if (scale != 0) {
         bind.sessionSendPointer(
             sessionId: sessionId,
-            msg: json.encode({
-              'touch': {'scale': scale}
-            }));
+            msg: json.encode(
+                PointerEventToRust(kPointerEventKindTouch, 'scale', scale)
+                    .toJson()));
       }
     } else {
       // mobile
@@ -283,9 +288,8 @@ class _RawTouchGestureDetectorRegionState
     if (isDesktop) {
       bind.sessionSendPointer(
           sessionId: sessionId,
-          msg: json.encode({
-            'touch': {'scale': 0}
-          }));
+          msg: json.encode(
+              PointerEventToRust(kPointerEventKindTouch, 'scale', 0).toJson()));
     } else {
       // mobile
       _scale = 1;

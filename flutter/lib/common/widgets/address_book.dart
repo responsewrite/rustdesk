@@ -1,3 +1,6 @@
+import 'dart:math';
+
+import 'package:dynamic_layouts/dynamic_layouts.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_hbb/common/formatter/id_formatter.dart';
 import 'package:flutter_hbb/common/widgets/peer_card.dart';
@@ -7,6 +10,7 @@ import 'package:flutter_hbb/models/ab_model.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 import '../../desktop/widgets/material_mod_popup_menu.dart' as mod_menu;
 import 'package:get/get.dart';
+import 'package:flex_color_picker/flex_color_picker.dart';
 
 import '../../common.dart';
 import 'dialog.dart';
@@ -34,7 +38,7 @@ class _AddressBookState extends State<AddressBook> {
 
   @override
   Widget build(BuildContext context) => Obx(() {
-        if (gFFI.userModel.userName.value.isEmpty) {
+        if (!gFFI.userModel.isLogin) {
           return Center(
               child: ElevatedButton(
                   onPressed: loginDialog, child: Text(translate("Login"))));
@@ -48,11 +52,13 @@ class _AddressBookState extends State<AddressBook> {
             children: [
               // NOT use Offstage to wrap LinearProgressIndicator
               if (gFFI.abModel.retrying.value) LinearProgressIndicator(),
-              _buildErrorBanner(
+              buildErrorBanner(context,
+                  loading: gFFI.abModel.abLoading,
                   err: gFFI.abModel.pullError,
                   retry: null,
                   close: () => gFFI.abModel.pullError.value = ''),
-              _buildErrorBanner(
+              buildErrorBanner(context,
+                  loading: gFFI.abModel.abLoading,
                   err: gFFI.abModel.pushError,
                   retry: () => gFFI.abModel.pushAb(isRetry: true),
                   close: () => gFFI.abModel.pushError.value = ''),
@@ -64,61 +70,6 @@ class _AddressBookState extends State<AddressBook> {
           );
         }
       });
-
-  Widget _buildErrorBanner(
-      {required RxString err,
-      required Function? retry,
-      required Function close}) {
-    const double height = 25;
-    return Obx(() => Offstage(
-          offstage: !(!gFFI.abModel.abLoading.value && err.value.isNotEmpty),
-          child: Center(
-              child: Container(
-            height: height,
-            color: Color.fromARGB(255, 253, 238, 235),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                FittedBox(
-                  child: Icon(
-                    Icons.info,
-                    color: Color.fromARGB(255, 249, 81, 81),
-                  ),
-                ).marginAll(4),
-                Flexible(
-                  child: Align(
-                      alignment: Alignment.centerLeft,
-                      child: Tooltip(
-                        message: translate(err.value),
-                        child: Text(
-                          translate(err.value),
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      )).marginSymmetric(vertical: 2),
-                ),
-                if (retry != null)
-                  InkWell(
-                      onTap: () {
-                        retry.call();
-                      },
-                      child: Text(
-                        translate("Retry"),
-                        style: TextStyle(color: MyTheme.accent),
-                      )).marginSymmetric(horizontal: 5),
-                FittedBox(
-                  child: InkWell(
-                    onTap: () {
-                      close.call();
-                    },
-                    child: Icon(Icons.close).marginSymmetric(horizontal: 5),
-                  ),
-                ).marginAll(4)
-              ],
-            ),
-          )).marginOnly(bottom: 14),
-        ));
-  }
 
   Widget _buildAddressBookDesktop() {
     return Row(
@@ -208,20 +159,31 @@ class _AddressBookState extends State<AddressBook> {
       } else {
         tags = gFFI.abModel.tags;
       }
-      return Wrap(
-        children: tags
-            .map((e) => AddressBookTag(
-                name: e,
-                tags: gFFI.abModel.selectedTags,
-                onTap: () {
-                  if (gFFI.abModel.selectedTags.contains(e)) {
-                    gFFI.abModel.selectedTags.remove(e);
-                  } else {
-                    gFFI.abModel.selectedTags.add(e);
-                  }
-                }))
-            .toList(),
-      );
+      tagBuilder(String e) {
+        return AddressBookTag(
+            name: e,
+            tags: gFFI.abModel.selectedTags,
+            onTap: () {
+              if (gFFI.abModel.selectedTags.contains(e)) {
+                gFFI.abModel.selectedTags.remove(e);
+              } else {
+                gFFI.abModel.selectedTags.add(e);
+              }
+            });
+      }
+
+      final gridView = DynamicGridView.builder(
+          shrinkWrap: isMobile,
+          gridDelegate: SliverGridDelegateWithWrapping(),
+          itemCount: tags.length,
+          itemBuilder: (BuildContext context, int index) {
+            final e = tags[index];
+            return tagBuilder(e);
+          });
+      final maxHeight = max(MediaQuery.of(context).size.height / 6, 100.0);
+      return isDesktop
+          ? gridView
+          : LimitedBox(maxHeight: maxHeight, child: gridView);
     });
   }
 
@@ -229,11 +191,10 @@ class _AddressBookState extends State<AddressBook> {
     return Expanded(
       child: Align(
           alignment: Alignment.topLeft,
-          child: Obx(() => AddressBookPeersView(
-                menuPadding: widget.menuPadding,
-                // ignore: invalid_use_of_protected_member
-                initPeers: gFFI.abModel.peers.value,
-              ))),
+          child: AddressBookPeersView(
+            menuPadding: widget.menuPadding,
+            initPeers: gFFI.abModel.peers,
+          )),
     );
   }
 
@@ -513,7 +474,7 @@ class AddressBookTag extends StatelessWidget {
       child: Obx(() => Container(
             decoration: BoxDecoration(
                 color: tags.contains(name)
-                    ? str2color2(name, 0xFF)
+                    ? gFFI.abModel.getTagColor(name)
                     : Theme.of(context).colorScheme.background,
                 borderRadius: BorderRadius.circular(4)),
             margin: const EdgeInsets.symmetric(horizontal: 4.0, vertical: 4.0),
@@ -528,7 +489,7 @@ class AddressBookTag extends StatelessWidget {
                         shape: BoxShape.circle,
                         color: tags.contains(name)
                             ? Colors.white
-                            : str2color2(name)),
+                            : gFFI.abModel.getTagColor(name)),
                   ).marginOnly(right: radius / 2),
                   Expanded(
                     child: Text(name,
@@ -567,6 +528,30 @@ class AddressBookTag extends StatelessWidget {
             onCancel: () {
               Future.delayed(Duration.zero, () => Get.back());
             });
+      }),
+      getEntry(translate(translate('Change Color')), () async {
+        final model = gFFI.abModel;
+        Color oldColor = model.getTagColor(name);
+        Color newColor = await showColorPickerDialog(
+          context,
+          oldColor,
+          pickersEnabled: {
+            ColorPickerType.accent: false,
+            ColorPickerType.wheel: true,
+          },
+          pickerTypeLabels: {
+            ColorPickerType.primary: translate("Primary Color"),
+            ColorPickerType.wheel: translate("HSV Color"),
+          },
+          actionButtons: ColorPickerActionButtons(
+              dialogOkButtonLabel: translate("OK"),
+              dialogCancelButtonLabel: translate("Cancel")),
+          showColorCode: true,
+        );
+        if (oldColor != newColor) {
+          model.setTagColor(name, newColor);
+          model.pushAb();
+        }
       }),
       getEntry(translate("Delete"), () {
         gFFI.abModel.deleteTag(name);

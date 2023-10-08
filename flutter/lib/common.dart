@@ -91,7 +91,6 @@ class IconFont {
   static const IconData roundClose = IconData(0xe6ed, fontFamily: _family2);
   static const IconData addressBook =
       IconData(0xe602, fontFamily: "AddressBook");
-  static const IconData checkbox = IconData(0xe7d6, fontFamily: "CheckBox");
 }
 
 class ColorThemeExtension extends ThemeExtension<ColorThemeExtension> {
@@ -101,6 +100,8 @@ class ColorThemeExtension extends ThemeExtension<ColorThemeExtension> {
     required this.highlight,
     required this.drag_indicator,
     required this.shadow,
+    required this.errorBannerBg,
+    required this.me,
   });
 
   final Color? border;
@@ -108,6 +109,8 @@ class ColorThemeExtension extends ThemeExtension<ColorThemeExtension> {
   final Color? highlight;
   final Color? drag_indicator;
   final Color? shadow;
+  final Color? errorBannerBg;
+  final Color? me;
 
   static final light = ColorThemeExtension(
     border: Color(0xFFCCCCCC),
@@ -115,6 +118,8 @@ class ColorThemeExtension extends ThemeExtension<ColorThemeExtension> {
     highlight: Color(0xFFE5E5E5),
     drag_indicator: Colors.grey[800],
     shadow: Colors.black,
+    errorBannerBg: Color(0xFFFDEEEB),
+    me: Colors.green,
   );
 
   static final dark = ColorThemeExtension(
@@ -123,6 +128,8 @@ class ColorThemeExtension extends ThemeExtension<ColorThemeExtension> {
     highlight: Color(0xFF3F3F3F),
     drag_indicator: Colors.grey,
     shadow: Colors.grey,
+    errorBannerBg: Color(0xFF470F2D),
+    me: Colors.greenAccent,
   );
 
   @override
@@ -132,6 +139,8 @@ class ColorThemeExtension extends ThemeExtension<ColorThemeExtension> {
     Color? highlight,
     Color? drag_indicator,
     Color? shadow,
+    Color? errorBannerBg,
+    Color? me,
   }) {
     return ColorThemeExtension(
       border: border ?? this.border,
@@ -139,6 +148,8 @@ class ColorThemeExtension extends ThemeExtension<ColorThemeExtension> {
       highlight: highlight ?? this.highlight,
       drag_indicator: drag_indicator ?? this.drag_indicator,
       shadow: shadow ?? this.shadow,
+      errorBannerBg: errorBannerBg ?? this.errorBannerBg,
+      me: me ?? this.me,
     );
   }
 
@@ -154,6 +165,8 @@ class ColorThemeExtension extends ThemeExtension<ColorThemeExtension> {
       highlight: Color.lerp(highlight, other.highlight, t),
       drag_indicator: Color.lerp(drag_indicator, other.drag_indicator, t),
       shadow: Color.lerp(shadow, other.shadow, t),
+      errorBannerBg: Color.lerp(shadow, other.errorBannerBg, t),
+      me: Color.lerp(shadow, other.me, t),
     );
   }
 }
@@ -258,6 +271,32 @@ class MyTheme {
       ? EdgeInsets.only(left: dialogPadding)
       : EdgeInsets.only(left: dialogPadding / 3);
 
+  static ScrollbarThemeData scrollbarTheme = ScrollbarThemeData(
+    thickness: MaterialStateProperty.all(6),
+    thumbColor: MaterialStateProperty.resolveWith<Color?>((states) {
+      if (states.contains(MaterialState.dragged)) {
+        return Colors.grey[900];
+      } else if (states.contains(MaterialState.hovered)) {
+        return Colors.grey[700];
+      } else {
+        return Colors.grey[500];
+      }
+    }),
+    crossAxisMargin: 4,
+  );
+
+  static ScrollbarThemeData scrollbarThemeDark = scrollbarTheme.copyWith(
+    thumbColor: MaterialStateProperty.resolveWith<Color?>((states) {
+      if (states.contains(MaterialState.dragged)) {
+        return Colors.grey[100];
+      } else if (states.contains(MaterialState.hovered)) {
+        return Colors.grey[300];
+      } else {
+        return Colors.grey[500];
+      }
+    }),
+  );
+
   static ThemeData lightTheme = ThemeData(
     brightness: Brightness.light,
     hoverColor: Color.fromARGB(255, 224, 224, 224),
@@ -273,6 +312,7 @@ class MyTheme {
         ),
       ),
     ),
+    scrollbarTheme: scrollbarTheme,
     inputDecorationTheme: isDesktop
         ? InputDecorationTheme(
             fillColor: grayBg,
@@ -357,6 +397,7 @@ class MyTheme {
         ),
       ),
     ),
+    scrollbarTheme: scrollbarThemeDark,
     inputDecorationTheme: isDesktop
         ? InputDecorationTheme(
             fillColor: Color(0xFF24252B),
@@ -382,9 +423,6 @@ class MyTheme {
     visualDensity: VisualDensity.adaptivePlatformDensity,
     tabBarTheme: const TabBarTheme(
       labelColor: Colors.white70,
-    ),
-    scrollbarTheme: ScrollbarThemeData(
-      thumbColor: MaterialStateProperty.all(Colors.grey[500]),
     ),
     tooltipTheme: tooltipTheme(),
     splashColor: isDesktop ? Colors.transparent : null,
@@ -614,6 +652,7 @@ class OverlayDialogManager {
   int _tagCount = 0;
 
   OverlayEntry? _mobileActionsOverlayEntry;
+  RxBool mobileActionsOverlayVisible = false.obs;
 
   void setOverlayState(OverlayKeyState overlayKeyState) {
     _overlayKeyState = overlayKeyState;
@@ -780,12 +819,14 @@ class OverlayDialogManager {
     });
     overlayState.insert(overlay);
     _mobileActionsOverlayEntry = overlay;
+    mobileActionsOverlayVisible.value = true;
   }
 
   void hideMobileActionsOverlay() {
     if (_mobileActionsOverlayEntry != null) {
       _mobileActionsOverlayEntry!.remove();
       _mobileActionsOverlayEntry = null;
+      mobileActionsOverlayVisible.value = false;
       return;
     }
   }
@@ -954,11 +995,22 @@ void msgBox(SessionID sessionId, String type, String title, String text,
         }));
   }
   if (reconnect != null && title == "Connection Error") {
-    buttons.insert(
-        0,
-        dialogButton('Reconnect', isOutline: true, onPressed: () {
-          reconnect(dialogManager, sessionId, false);
-        }));
+    // `enabled` is used to disable the dialog button once the button is clicked.
+    final enabled = true.obs;
+    final button = Obx(
+      () => dialogButton(
+        'Reconnect',
+        isOutline: true,
+        onPressed: enabled.isTrue
+            ? () {
+                // Disable the button
+                enabled.value = false;
+                reconnect(dialogManager, sessionId, false);
+              }
+            : null,
+      ),
+    );
+    buttons.insert(0, button);
   }
   if (link.isNotEmpty) {
     buttons.insert(0, dialogButton('JumpLink', onPressed: jumplink));
@@ -1077,7 +1129,7 @@ Color str2color(String str, [alpha = 0xFF]) {
   return Color((hash & 0xFF7FFF) | (alpha << 24));
 }
 
-Color str2color2(String str, [alpha = 0xFF]) {
+Color str2color2(String str, {List<int> existing = const []}) {
   Map<String, Color> colorMap = {
     "red": Colors.red,
     "green": Colors.green,
@@ -1094,10 +1146,10 @@ Color str2color2(String str, [alpha = 0xFF]) {
   };
   final color = colorMap[str.toLowerCase()];
   if (color != null) {
-    return color.withAlpha(alpha);
+    return color.withAlpha(0xFF);
   }
   if (str.toLowerCase() == 'yellow') {
-    return Colors.yellow.withAlpha(alpha);
+    return Colors.yellow.withAlpha(0xFF);
   }
   var hash = 0;
   for (var i = 0; i < str.length; i++) {
@@ -1105,7 +1157,15 @@ Color str2color2(String str, [alpha = 0xFF]) {
   }
   List<Color> colorList = colorMap.values.toList();
   hash = hash % colorList.length;
-  return colorList[hash].withAlpha(alpha);
+  var result = colorList[hash].withAlpha(0xFF);
+  if (existing.contains(result.value)) {
+    Color? notUsed =
+        colorList.firstWhereOrNull((e) => !existing.contains(e.value));
+    if (notUsed != null) {
+      result = notUsed;
+    }
+  }
+  return result;
 }
 
 const K = 1024;
@@ -1381,9 +1441,10 @@ class LastWindowPosition {
   double? offsetWidth;
   double? offsetHeight;
   bool? isMaximized;
+  bool? isFullscreen;
 
   LastWindowPosition(this.width, this.height, this.offsetWidth,
-      this.offsetHeight, this.isMaximized);
+      this.offsetHeight, this.isMaximized, this.isFullscreen);
 
   Map<String, dynamic> toJson() {
     return <String, dynamic>{
@@ -1392,6 +1453,7 @@ class LastWindowPosition {
       "offsetWidth": offsetWidth,
       "offsetHeight": offsetHeight,
       "isMaximized": isMaximized,
+      "isFullscreen": isFullscreen,
     };
   }
 
@@ -1407,7 +1469,7 @@ class LastWindowPosition {
     try {
       final m = jsonDecode(content);
       return LastWindowPosition(m["width"], m["height"], m["offsetWidth"],
-          m["offsetHeight"], m["isMaximized"]);
+          m["offsetHeight"], m["isMaximized"], m["isFullscreen"]);
     } catch (e) {
       debugPrintStack(
           label:
@@ -1428,6 +1490,8 @@ Future<void> saveWindowPosition(WindowType type, {int? windowId}) async {
   late Offset position;
   late Size sz;
   late bool isMaximized;
+  bool isFullscreen = stateGlobal.fullscreen ||
+      (Platform.isMacOS && stateGlobal.closeOnFullscreen);
   setFrameIfMaximized() {
     if (isMaximized) {
       final pos = bind.getLocalFlutterOption(k: kWindowPrefix + type.name);
@@ -1473,20 +1537,21 @@ Future<void> saveWindowPosition(WindowType type, {int? windowId}) async {
   }
 
   final pos = LastWindowPosition(
-      sz.width, sz.height, position.dx, position.dy, isMaximized);
+      sz.width, sz.height, position.dx, position.dy, isMaximized, isFullscreen);
   debugPrint(
-      "Saving frame: $windowId: ${pos.width}/${pos.height}, offset:${pos.offsetWidth}/${pos.offsetHeight}, isMaximized:${pos.isMaximized}");
+      "Saving frame: $windowId: ${pos.width}/${pos.height}, offset:${pos.offsetWidth}/${pos.offsetHeight}, isMaximized:${pos.isMaximized}, isFullscreen:${pos.isFullscreen}");
 
   await bind.setLocalFlutterOption(
       k: kWindowPrefix + type.name, v: pos.toString());
 
   if (type == WindowType.RemoteDesktop && windowId != null) {
-    await _saveSessionWindowPosition(type, windowId, isMaximized, pos);
+    await _saveSessionWindowPosition(
+        type, windowId, isMaximized, isFullscreen, pos);
   }
 }
 
 Future _saveSessionWindowPosition(WindowType windowType, int windowId,
-    bool isMaximized, LastWindowPosition pos) async {
+    bool isMaximized, bool isFullscreen, LastWindowPosition pos) async {
   final remoteList = await DesktopMultiWindow.invokeMethod(
       windowId, kWindowEventGetRemoteList, null);
   getPeerPos(String peerId) {
@@ -1499,7 +1564,8 @@ Future _saveSessionWindowPosition(WindowType windowType, int windowId,
               lpos?.height ?? pos.offsetHeight,
               lpos?.offsetWidth ?? pos.offsetWidth,
               lpos?.offsetHeight ?? pos.offsetHeight,
-              isMaximized)
+              isMaximized,
+              isFullscreen)
           .toString();
     } else {
       return pos.toString();
@@ -1689,9 +1755,18 @@ Future<bool> restoreWindowPosition(WindowType type,
           await wc.setFrame(frame);
         }
       }
-      if (lpos.isMaximized == true) {
+      if (lpos.isFullscreen == true) {
         await restoreFrame();
-        await wc.maximize();
+        // An duration is needed to avoid the window being restored after fullscreen.
+        Future.delayed(Duration(milliseconds: 300), () async {
+          stateGlobal.setFullscreen(true);
+        });
+      } else if (lpos.isMaximized == true) {
+        await restoreFrame();
+        // An duration is needed to avoid the window being restored after maximized.
+        Future.delayed(Duration(milliseconds: 300), () async {
+          await wc.maximize();
+        });
       } else {
         await restoreFrame();
       }
@@ -2263,7 +2338,7 @@ String getWindowName({WindowType? overrideType}) {
 }
 
 String getWindowNameWithId(String id, {WindowType? overrideType}) {
-  return "${DesktopTab.labelGetterAlias(id).value} - ${getWindowName(overrideType: overrideType)}";
+  return "${DesktopTab.tablabelGetter(id).value} - ${getWindowName(overrideType: overrideType)}";
 }
 
 Future<void> updateSystemWindowTheme() async {
@@ -2439,4 +2514,78 @@ String toCapitalized(String s) {
     return s;
   }
   return s.substring(0, 1).toUpperCase() + s.substring(1);
+}
+
+Widget buildErrorBanner(BuildContext context,
+    {required RxBool loading,
+    required RxString err,
+    required Function? retry,
+    required Function close}) {
+  const double height = 25;
+  return Obx(() => Offstage(
+        offstage: !(!loading.value && err.value.isNotEmpty),
+        child: Center(
+            child: Container(
+          height: height,
+          color: MyTheme.color(context).errorBannerBg,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              FittedBox(
+                child: Icon(
+                  Icons.info,
+                  color: Color.fromARGB(255, 249, 81, 81),
+                ),
+              ).marginAll(4),
+              Flexible(
+                child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Tooltip(
+                      message: translate(err.value),
+                      child: Text(
+                        translate(err.value),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    )).marginSymmetric(vertical: 2),
+              ),
+              if (retry != null)
+                InkWell(
+                    onTap: () {
+                      retry.call();
+                    },
+                    child: Text(
+                      translate("Retry"),
+                      style: TextStyle(color: MyTheme.accent),
+                    )).marginSymmetric(horizontal: 5),
+              FittedBox(
+                child: InkWell(
+                  onTap: () {
+                    close.call();
+                  },
+                  child: Icon(Icons.close).marginSymmetric(horizontal: 5),
+                ),
+              ).marginAll(4)
+            ],
+          ),
+        )).marginOnly(bottom: 14),
+      ));
+}
+
+String getDesktopTabLabel(String peerId, String alias) {
+  String label = alias.isEmpty ? peerId : alias;
+  try {
+    String peer = bind.mainGetPeerSync(id: peerId);
+    Map<String, dynamic> config = jsonDecode(peer);
+    if (config['info']['hostname'] is String) {
+      String hostname = config['info']['hostname'];
+      if (hostname.isNotEmpty &&
+          !label.toLowerCase().contains(hostname.toLowerCase())) {
+        label += "@$hostname";
+      }
+    }
+  } catch (e) {
+    debugPrint("Failed to get hostname:$e");
+  }
+  return label;
 }
