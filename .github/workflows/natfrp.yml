@@ -11,13 +11,27 @@ on:
         description: 'Version string in filename'
 
 env:
+  RUST_VERSION: "1.75"
   LLVM_VERSION: "15.0.6"
-  FLUTTER_VERSION: "3.10.5"
-  FLUTTER_RUST_BRIDGE_VERSION: "1.75.3"
+  FLUTTER_VERSION: "3.19.5"
+  FLUTTER_RUST_BRIDGE_VERSION: "1.80.1"
+  # vcpkg version: 2023.10.19
+  # for multiarch gcc compatibility
+  VCPKG_COMMIT_ID: "8eb57355a4ffb410a2e94c07b4dca2dffbee8e50"
 
 jobs:
+  build-RustDeskTempTopMostWindow:
+    uses: ./.github/workflows/third-party-RustDeskTempTopMostWindow.yml
+    with:
+      upload-artifact: true
+      target: windows-2019
+      configuration: Release
+      platform: x64
+      target_version: Windows10
+
   build-for-windows-flutter:
     name: x86_64-pc-windows-msvc (windows-2019)
+    needs: [build-RustDeskTempTopMostWindow]
     runs-on: windows-2019
     steps:
       - name: Checkout source code
@@ -47,21 +61,12 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
 
-      - name: Cache [Install Rust toolchain]
-        id: cache-rust
-        uses: actions/cache@v3
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
         with:
-          path: ~/.rustup
-          key: rust-stable-x86_64-pc-windows-msvc
-
-      - if: ${{ steps.cache-rust.outputs.cache-hit != 'true' }}
-        name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          target: x86_64-pc-windows-msvc
-          override: true
-          profile: minimal # minimal component installation (ie, no documentation)
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: x86_64-pc-windows-msvc
+          components: "rustfmt"
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -69,41 +74,57 @@ jobs:
 
       - name: Install flutter rust bridge deps
         run: |
+          git config --global core.longpaths true
           cargo install flutter_rust_bridge_codegen --version ${{ env.FLUTTER_RUST_BRIDGE_VERSION }} --features "uuid"
           flutter --disable-telemetry
           Push-Location flutter ; flutter pub get ; Pop-Location
           ~/.cargo/bin/flutter_rust_bridge_codegen --rust-input ./src/flutter_ffi.rs --dart-output ./flutter/lib/generated_bridge.dart
 
-      - name: Cache [Install vcpkg dependencies]
-        id: cache-vcpkg
-        uses: actions/cache@v3
+      - name: Setup vcpkg with Github Actions binary cache
+        uses: lukka/run-vcpkg@v11
         with:
-          path: C:\rustdesk_thirdpary_lib
-          key: vcpkg
+          vcpkgDirectory: C:\vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
 
-      - if: ${{ steps.cache-vcpkg.outputs.cache-hit != 'true' }}
-        name: Install vcpkg dependencies
+      - name: Install vcpkg dependencies
         run: |
-          cd C:\
-          git clone https://github.com/Kingtous/rustdesk_thirdpary_lib --depth=1
+          $VCPKG_ROOT/vcpkg install --triplet x64-windows-static --x-install-root="$VCPKG_ROOT/installed"
+        shell: bash
 
       - name: Build rustdesk
-        env:
-          VCPKG_ROOT: C:\rustdesk_thirdpary_lib\vcpkg
-        run: python3 .\build.py --portable --hwcodec --flutter --feature IddDriver
+        run: python3 .\build.py --portable --hwcodec --flutter --gpucodec --skip-portable-pack
 
-      # TODO: figure out a way to sign binaries with hardware key
+      - name: find Runner.res
+        # Windows: find Runner.res (compiled from ./flutter/windows/runner/Runner.rc), copy to ./Runner.res
+        # Runner.rc does not contain actual version, but Runner.res does
+        continue-on-error: true
+        shell: bash
+        run: |
+          runner_res=$(find . -name "Runner.res");
+          if [ "$runner_res" == "" ]; then
+            echo "Runner.res: not found";
+          else
+            echo "Runner.res: $runner_res";
+            cp $runner_res ./libs/portable/Runner.res;
+            echo "list ./libs/portable/Runner.res";
+            ls -l ./libs/portable/Runner.res;
+          fi
+
+      - name: Download RustDeskTempTopMostWindow artifacts
+        uses: actions/download-artifact@master
+        with:
+          name: topmostwindow-artifacts
+          path: "./flutter/build/windows/x64/runner/Release/"
 
       - name: Build self-extracted executable
         shell: bash
         run: |
           pushd ./libs/portable
-          python3 ./generate.py -f ../../flutter/build/windows/runner/Release/ -o . -e ../../flutter/build/windows/runner/Release/rustdesk.exe
+          pip3 install -r requirements.txt
+          python3 ./generate.py -f ../../rustdesk/ -o . -e ../../rustdesk/rustdesk.exe
           popd
           mkdir -p ./SignOutput
           mv ./target/release/rustdesk-portable-packer.exe ./SignOutput/rustdesk-natfrp-${{ inputs.version }}-x86_64.exe
-
-      # TODO: figure out a way to sign binaries with hardware key
 
       - name: Publish Release
         uses: softprops/action-gh-release@v1
