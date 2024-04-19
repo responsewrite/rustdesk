@@ -5,7 +5,9 @@ use desktop::Desktop;
 use hbb_common::config::CONFIG_OPTION_ALLOW_LINUX_HEADLESS;
 pub use hbb_common::platform::linux::*;
 use hbb_common::{
-    allow_err, bail,
+    allow_err,
+    anyhow::anyhow,
+    bail,
     config::Config,
     libc::{c_char, c_int, c_long, c_void},
     log,
@@ -15,7 +17,8 @@ use hbb_common::{
 use std::{
     cell::RefCell,
     ffi::OsStr,
-    io::Write,
+    fs::File,
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Child, Command},
     string::String,
@@ -26,11 +29,16 @@ use std::{
     time::{Duration, Instant},
 };
 use users::{get_user_by_name, os::unix::UserExt};
+use wallpaper;
 
 type Xdo = *const c_void;
 
 pub const PA_SAMPLE_RATE: u32 = 48000;
 static mut UNMODIFIED: bool = true;
+
+lazy_static::lazy_static! {
+    pub static ref IS_X11: bool = hbb_common::platform::linux::is_x11_or_headless();
+}
 
 thread_local! {
     static XDO: RefCell<Xdo> = RefCell::new(unsafe { xdo_new(std::ptr::null()) });
@@ -206,6 +214,12 @@ fn try_start_server_(desktop: Option<&Desktop>) -> ResultType<Option<Child>> {
             if !desktop.xauth.is_empty() {
                 envs.push(("XAUTHORITY", desktop.xauth.clone()));
             }
+            if !desktop.wl_display.is_empty() {
+                envs.push(("WAYLAND_DISPLAY", desktop.wl_display.clone()));
+            }
+            if !desktop.home.is_empty() {
+                envs.push(("HOME", desktop.home.clone()));
+            }
             run_as_user(
                 vec!["--server"],
                 Some((desktop.uid.clone(), desktop.username.clone())),
@@ -368,7 +382,7 @@ pub fn start_os_service() {
 
         // Duplicate logic here with should_start_server
         // Login wayland will try to start a headless --server.
-        if desktop.username == "root" || !desktop.is_wayland() || desktop.is_login_wayland() {
+        if desktop.username == "root" || desktop.is_login_wayland() {
             // try kill subprocess "--server"
             stop_server(&mut user_server);
             // try start subprocess "--server"
@@ -396,7 +410,7 @@ pub fn start_os_service() {
 
             // try start subprocess "--server"
             if should_start_server(
-                false,
+                !desktop.is_wayland(),
                 is_display_changed,
                 &mut uid,
                 &desktop,
@@ -581,10 +595,8 @@ where
     let xdg = &format!("XDG_RUNTIME_DIR=/run/user/{}", uid) as &str;
     let mut args = vec![xdg, "-u", &username, cmd.to_str().unwrap_or("")];
     args.append(&mut arg.clone());
-    // -E required for opensuse
-    if is_opensuse() {
-        args.insert(0, "-E");
-    }
+    // -E is required to preserve env
+    args.insert(0, "-E");
 
     let task = Command::new("sudo").envs(envs).args(args).spawn()?;
     Ok(Some(task))
@@ -916,7 +928,7 @@ mod desktop {
 
     const XWAYLAND: &str = "Xwayland";
     const IBUS_DAEMON: &str = "ibus-daemon";
-    const PLASMA_KDED5: &str = "kded5";
+    const PLASMA_KDED: &str = "kded[0-9]+";
     const GNOME_GOA_DAEMON: &str = "goa-daemon";
     const RUSTDESK_TRAY: &str = "rustdesk +--tray";
 
@@ -928,7 +940,9 @@ mod desktop {
         pub protocal: String,
         pub display: String,
         pub xauth: String,
+        pub home: String,
         pub is_rustdesk_subprocess: bool,
+        pub wl_display: String,
     }
 
     impl Desktop {
@@ -953,12 +967,13 @@ mod desktop {
                     XWAYLAND,
                     IBUS_DAEMON,
                     GNOME_GOA_DAEMON,
-                    PLASMA_KDED5,
+                    PLASMA_KDED,
                     RUSTDESK_TRAY,
                 ];
                 for proc in display_proc {
                     self.display = get_env("DISPLAY", &self.uid, proc);
                     self.xauth = get_env("XAUTHORITY", &self.uid, proc);
+                    self.wl_display = get_env("WAYLAND_DISPLAY", &self.uid, proc);
                     if !self.display.is_empty() && !self.xauth.is_empty() {
                         break;
                     }
@@ -973,7 +988,7 @@ mod desktop {
                     XWAYLAND,
                     IBUS_DAEMON,
                     GNOME_GOA_DAEMON,
-                    PLASMA_KDED5,
+                    PLASMA_KDED,
                     XFCE4_PANEL,
                     SDDM_GREETER,
                 ];
@@ -996,6 +1011,16 @@ mod desktop {
                 .display
                 .replace(&whoami::hostname(), "")
                 .replace("localhost", "");
+        }
+
+        fn get_home(&mut self) {
+            self.home = "".to_string();
+
+            let cmd = format!(
+                "getent passwd '{}' | awk -F':' '{{print $6}}'",
+                &self.username
+            );
+            self.home = run_cmds_trim_newline(&cmd).unwrap_or(format!("/home/{}", &self.username));
         }
 
         fn get_xauth_from_xorg(&mut self) {
@@ -1046,9 +1071,10 @@ mod desktop {
                     XWAYLAND,
                     IBUS_DAEMON,
                     GNOME_GOA_DAEMON,
-                    PLASMA_KDED5,
+                    PLASMA_KDED,
                     XFCE4_PANEL,
                     SDDM_GREETER,
+                    RUSTDESK_TRAY,
                 ];
                 for proc in display_proc {
                     self.xauth = get_env("XAUTHORITY", &self.uid, proc);
@@ -1169,6 +1195,7 @@ mod desktop {
                 return;
             }
 
+            self.get_home();
             if self.is_wayland() {
                 if is_xwayland_running() {
                     self.get_display_xauth_xwayland();
@@ -1181,6 +1208,29 @@ mod desktop {
                 self.get_display_x11();
                 self.get_xauth_x11();
                 self.set_is_subprocess();
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn test_desktop_env() {
+            let mut d = Desktop::default();
+            d.refresh();
+            if d.username == "root" {
+                assert_eq!(d.home, "/root");
+            } else {
+                if !d.username.is_empty() {
+                    let home = super::super::get_env_var("HOME");
+                    if !home.is_empty() {
+                        assert_eq!(d.home, home);
+                    } else {
+                        // 
+                    }
+                }
             }
         }
     }
@@ -1248,7 +1298,7 @@ fn switch_service(stop: bool) -> String {
     }
 }
 
-pub fn uninstall_service(show_new_window: bool) -> bool {
+pub fn uninstall_service(show_new_window: bool, _: bool) -> bool {
     if !has_cmd("systemctl") {
         return false;
     }
@@ -1310,4 +1360,73 @@ NoDisplay=false
         )?;
     }
     Ok(())
+}
+
+pub struct WallPaperRemover {
+    old_path: String,
+    old_path_dark: Option<String>, // ubuntu 22.04 light/dark theme have different uri
+}
+
+impl WallPaperRemover {
+    pub fn new() -> ResultType<Self> {
+        let start = std::time::Instant::now();
+        let old_path = wallpaper::get().map_err(|e| anyhow!(e.to_string()))?;
+        let old_path_dark = wallpaper::get_dark().ok();
+        if old_path.is_empty() && old_path_dark.clone().unwrap_or_default().is_empty() {
+            bail!("already solid color");
+        }
+        wallpaper::set_from_path("").map_err(|e| anyhow!(e.to_string()))?;
+        wallpaper::set_dark_from_path("").ok();
+        log::info!(
+            "created wallpaper remover,  old_path: {:?}, old_path_dark: {:?}, elapsed: {:?}",
+            old_path,
+            old_path_dark,
+            start.elapsed(),
+        );
+        Ok(Self {
+            old_path,
+            old_path_dark,
+        })
+    }
+
+    pub fn support() -> bool {
+        let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
+        if wallpaper::gnome::is_compliant(&desktop) || desktop.as_str() == "XFCE" {
+            return wallpaper::get().is_ok();
+        }
+        false
+    }
+}
+
+impl Drop for WallPaperRemover {
+    fn drop(&mut self) {
+        allow_err!(wallpaper::set_from_path(&self.old_path).map_err(|e| anyhow!(e.to_string())));
+        if let Some(old_path_dark) = &self.old_path_dark {
+            allow_err!(wallpaper::set_dark_from_path(old_path_dark.as_str())
+                .map_err(|e| anyhow!(e.to_string())));
+        }
+    }
+}
+
+#[inline]
+pub fn is_x11() -> bool {
+    *IS_X11
+}
+
+#[inline]
+pub fn is_selinux_enforcing() -> bool {
+    match run_cmds("getenforce") {
+        Ok(output) => output.trim() == "Enforcing",
+        Err(_) => match run_cmds("sestatus") {
+            Ok(output) => {
+                for line in output.lines() {
+                    if line.contains("Current mode:") {
+                        return line.contains("enforcing");
+                    }
+                }
+                false
+            }
+            Err(_) => false,
+        },
+    }
 }

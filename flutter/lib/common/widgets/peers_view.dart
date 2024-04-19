@@ -9,6 +9,7 @@ import 'package:get/get.dart';
 import 'package:provider/provider.dart';
 import 'package:visibility_detector/visibility_detector.dart';
 import 'package:window_manager/window_manager.dart';
+import 'package:flutter_hbb/models/peer_tab_model.dart';
 
 import '../../common.dart';
 import '../../models/peer_model.dart';
@@ -77,11 +78,11 @@ class _PeersViewState extends State<_PeersView> with WindowListener {
     LoadEvent.lan: 'empty_lan_tip',
     LoadEvent.addressBook: 'empty_address_book_tip',
   });
-  final space = isDesktop ? 12.0 : 8.0;
+  final space = (isDesktop || isWebDesktop) ? 12.0 : 8.0;
   final _curPeers = <String>{};
   var _lastChangeTime = DateTime.now();
   var _lastQueryPeers = <String>{};
-  var _lastQueryTime = DateTime.now().subtract(const Duration(hours: 1));
+  var _lastQueryTime = DateTime.now().add(const Duration(seconds: 30));
   var _queryCount = 0;
   var _exit = false;
 
@@ -188,12 +189,32 @@ class _PeersViewState extends State<_PeersView> with WindowListener {
                 onVisibilityChanged: onVisibilityChanged,
                 child: widget.peerCardBuilder(peer),
               );
-              return isDesktop
+              final windowWidth = MediaQuery.of(context).size.width;
+              // `Provider.of<PeerTabModel>(context)` will causes infinete loop.
+              // Because `gFFI.peerTabModel.setCurrentTabCachedPeers(peers)` will trigger `notifyListeners()`.
+              //
+              // No need to listen the currentTab change event.
+              // Because the currentTab change event will trigger the peers change event,
+              // and the peers change event will trigger _buildPeersView().
+              final currentTab =
+                  Provider.of<PeerTabModel>(context, listen: false).currentTab;
+              final hideAbTagsPanel =
+                  bind.mainGetLocalOption(key: "hideAbTagsPanel").isNotEmpty;
+              return (isDesktop || isWebDesktop)
                   ? Obx(
                       () => SizedBox(
-                        width: 220,
-                        height:
-                            peerCardUiType.value == PeerUiType.grid ? 140 : 42,
+                        width: peerCardUiType.value != PeerUiType.list
+                            ? 220
+                            : currentTab == PeerTabIndex.group.index ||
+                                    (currentTab == PeerTabIndex.ab.index &&
+                                        !hideAbTagsPanel)
+                                ? windowWidth - 390
+                                : windowWidth - 227,
+                        height: peerCardUiType.value == PeerUiType.grid
+                            ? 140
+                            : peerCardUiType.value != PeerUiType.list
+                                ? 42
+                                : 45,
                         child: visibilityChild,
                       ),
                     )
@@ -258,8 +279,7 @@ class _PeersViewState extends State<_PeersView> with WindowListener {
           if (_queryCount < _maxQueryCount) {
             if (now.difference(_lastQueryTime) >= _queryInterval) {
               if (_curPeers.isNotEmpty) {
-                platformFFI.ffiBind
-                    .queryOnlines(ids: _curPeers.toList(growable: false));
+                bind.queryOnlines(ids: _curPeers.toList(growable: false));
                 _lastQueryTime = DateTime.now();
                 _queryCount += 1;
               }
@@ -273,7 +293,7 @@ class _PeersViewState extends State<_PeersView> with WindowListener {
 
   _queryOnlines(bool isLoadEvent) {
     if (_curPeers.isNotEmpty) {
-      platformFFI.ffiBind.queryOnlines(ids: _curPeers.toList(growable: false));
+      bind.queryOnlines(ids: _curPeers.toList(growable: false));
       _lastQueryPeers = {..._curPeers};
       if (isLoadEvent) {
         _lastChangeTime = DateTime.now();
@@ -341,7 +361,7 @@ abstract class BasePeersView extends StatelessWidget {
   final String loadEvent;
   final PeerFilter? peerFilter;
   final PeerCardBuilder peerCardBuilder;
-  final RxList<Peer>? initPeers;
+  final GetInitPeers? getInitPeers;
 
   const BasePeersView({
     Key? key,
@@ -349,13 +369,14 @@ abstract class BasePeersView extends StatelessWidget {
     required this.loadEvent,
     this.peerFilter,
     required this.peerCardBuilder,
-    required this.initPeers,
+    required this.getInitPeers,
   }) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
     return _PeersView(
-        peers: Peers(name: name, loadEvent: loadEvent, initPeers: initPeers),
+        peers:
+            Peers(name: name, loadEvent: loadEvent, getInitPeers: getInitPeers),
         peerFilter: peerFilter,
         peerCardBuilder: peerCardBuilder);
   }
@@ -372,7 +393,7 @@ class RecentPeersView extends BasePeersView {
             peer: peer,
             menuPadding: menuPadding,
           ),
-          initPeers: null,
+          getInitPeers: null,
         );
 
   @override
@@ -394,7 +415,7 @@ class FavoritePeersView extends BasePeersView {
             peer: peer,
             menuPadding: menuPadding,
           ),
-          initPeers: null,
+          getInitPeers: null,
         );
 
   @override
@@ -416,7 +437,7 @@ class DiscoveredPeersView extends BasePeersView {
             peer: peer,
             menuPadding: menuPadding,
           ),
-          initPeers: null,
+          getInitPeers: null,
         );
 
   @override
@@ -432,7 +453,7 @@ class AddressBookPeersView extends BasePeersView {
       {Key? key,
       EdgeInsets? menuPadding,
       ScrollController? scrollController,
-      required RxList<Peer> initPeers})
+      required GetInitPeers getInitPeers})
       : super(
           key: key,
           name: 'address book peer',
@@ -443,19 +464,28 @@ class AddressBookPeersView extends BasePeersView {
             peer: peer,
             menuPadding: menuPadding,
           ),
-          initPeers: initPeers,
+          getInitPeers: getInitPeers,
         );
 
   static bool _hitTag(List<dynamic> selectedTags, List<dynamic> idents) {
     if (selectedTags.isEmpty) {
       return true;
     }
-    for (final tag in selectedTags) {
-      if (idents.contains(tag)) {
-        return true;
+    if (gFFI.abModel.filterByIntersection.value) {
+      for (final tag in selectedTags) {
+        if (!idents.contains(tag)) {
+          return false;
+        }
       }
+      return true;
+    } else {
+      for (final tag in selectedTags) {
+        if (idents.contains(tag)) {
+          return true;
+        }
+      }
+      return false;
     }
-    return false;
   }
 }
 
@@ -464,7 +494,7 @@ class MyGroupPeerView extends BasePeersView {
       {Key? key,
       EdgeInsets? menuPadding,
       ScrollController? scrollController,
-      required RxList<Peer> initPeers})
+      required GetInitPeers getInitPeers})
       : super(
           key: key,
           name: 'group peer',
@@ -474,7 +504,7 @@ class MyGroupPeerView extends BasePeersView {
             peer: peer,
             menuPadding: menuPadding,
           ),
-          initPeers: initPeers,
+          getInitPeers: getInitPeers,
         );
 
   static bool filter(Peer peer) {

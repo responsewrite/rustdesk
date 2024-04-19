@@ -5,16 +5,21 @@ use std::{
     time::Instant,
 };
 use winapi::{
-    shared::minwindef::{DWORD, FALSE},
+    shared::minwindef::{DWORD, FALSE, TRUE},
     um::{
         handleapi::CloseHandle,
         pdh::{
-            PdhAddCounterA, PdhCloseQuery, PdhCollectQueryData, PdhCollectQueryDataEx,
+            PdhAddEnglishCounterA, PdhCloseQuery, PdhCollectQueryData, PdhCollectQueryDataEx,
             PdhGetFormattedCounterValue, PdhOpenQueryA, PDH_FMT_COUNTERVALUE, PDH_FMT_DOUBLE,
             PDH_HCOUNTER, PDH_HQUERY,
         },
         synchapi::{CreateEventA, WaitForSingleObject},
-        winbase::{INFINITE, WAIT_OBJECT_0},
+        sysinfoapi::VerSetConditionMask,
+        winbase::{VerifyVersionInfoW, INFINITE, WAIT_OBJECT_0},
+        winnt::{
+            OSVERSIONINFOEXW, VER_BUILDNUMBER, VER_GREATER_EQUAL, VER_MAJORVERSION,
+            VER_MINORVERSION, VER_SERVICEPACKMAJOR, VER_SERVICEPACKMINOR,
+        },
     },
 };
 
@@ -66,9 +71,9 @@ pub fn start_cpu_performance_monitor() {
         }
         let _query = RAIIPDHQuery(query);
         let mut counter: PDH_HCOUNTER = std::mem::zeroed();
-        ret = PdhAddCounterA(query, COUNTER_PATH.as_ptr() as _, 0, &mut counter);
+        ret = PdhAddEnglishCounterA(query, COUNTER_PATH.as_ptr() as _, 0, &mut counter);
         if ret != 0 {
-            log::error!("PdhAddCounterA failed: 0x{:X}", ret);
+            log::error!("PdhAddEnglishCounterA failed: 0x{:X}", ret);
             return;
         }
         ret = PdhCollectQueryData(query);
@@ -151,4 +156,44 @@ pub fn sync_cpu_usage(cpu_usage: Option<f64>) {
     };
     *CPU_USAGE_ONE_MINUTE.lock().unwrap() = v;
     log::info!("cpu usage synced: {:?}", cpu_usage);
+}
+
+// https://learn.microsoft.com/en-us/windows/win32/sysinfo/targeting-your-application-at-windows-8-1
+// https://github.com/nodejs/node-convergence-archive/blob/e11fe0c2777561827cdb7207d46b0917ef3c42a7/deps/uv/src/win/util.c#L780
+pub fn is_windows_version_or_greater(
+    os_major: u32,
+    os_minor: u32,
+    build_number: u32,
+    service_pack_major: u32,
+    service_pack_minor: u32,
+) -> bool {
+    let mut osvi: OSVERSIONINFOEXW = unsafe { std::mem::zeroed() };
+    osvi.dwOSVersionInfoSize = std::mem::size_of::<OSVERSIONINFOEXW>() as DWORD;
+    osvi.dwMajorVersion = os_major as _;
+    osvi.dwMinorVersion = os_minor as _;
+    osvi.dwBuildNumber = build_number as _;
+    osvi.wServicePackMajor = service_pack_major as _;
+    osvi.wServicePackMinor = service_pack_minor as _;
+
+    let result = unsafe {
+        let mut condition_mask = 0;
+        let op = VER_GREATER_EQUAL;
+        condition_mask = VerSetConditionMask(condition_mask, VER_MAJORVERSION, op);
+        condition_mask = VerSetConditionMask(condition_mask, VER_MINORVERSION, op);
+        condition_mask = VerSetConditionMask(condition_mask, VER_BUILDNUMBER, op);
+        condition_mask = VerSetConditionMask(condition_mask, VER_SERVICEPACKMAJOR, op);
+        condition_mask = VerSetConditionMask(condition_mask, VER_SERVICEPACKMINOR, op);
+
+        VerifyVersionInfoW(
+            &mut osvi as *mut OSVERSIONINFOEXW,
+            VER_MAJORVERSION
+                | VER_MINORVERSION
+                | VER_BUILDNUMBER
+                | VER_SERVICEPACKMAJOR
+                | VER_SERVICEPACKMINOR,
+            condition_mask,
+        )
+    };
+
+    result == TRUE
 }

@@ -5,14 +5,18 @@ import 'package:flutter_breadcrumb/flutter_breadcrumb.dart';
 import 'package:flutter_hbb/models/file_model.dart';
 import 'package:get/get.dart';
 import 'package:toggle_switch/toggle_switch.dart';
-import 'package:wakelock/wakelock.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../common.dart';
 import '../../common/widgets/dialog.dart';
 
 class FileManagerPage extends StatefulWidget {
-  FileManagerPage({Key? key, required this.id}) : super(key: key);
+  FileManagerPage(
+      {Key? key, required this.id, this.password, this.isSharedPassword})
+      : super(key: key);
   final String id;
+  final String? password;
+  final bool? isSharedPassword;
 
   @override
   State<StatefulWidget> createState() => _FileManagerPageState();
@@ -67,13 +71,16 @@ class _FileManagerPageState extends State<FileManagerPage> {
   @override
   void initState() {
     super.initState();
-    gFFI.start(widget.id, isFileTransfer: true);
+    gFFI.start(widget.id,
+        isFileTransfer: true,
+        password: widget.password,
+        isSharedPassword: widget.isSharedPassword);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       gFFI.dialogManager
           .showLoading(translate('Connecting...'), onCancel: closeConnection);
     });
     gFFI.ffiModel.updateEventListener(gFFI.sessionId, widget.id);
-    Wakelock.enable();
+    WakelockPlus.enable();
   }
 
   @override
@@ -81,7 +88,7 @@ class _FileManagerPageState extends State<FileManagerPage> {
     model.close().whenComplete(() {
       gFFI.close();
       gFFI.dialogManager.dismissAll();
-      Wakelock.disable();
+      WakelockPlus.disable();
     });
     super.dispose();
   }
@@ -661,6 +668,7 @@ class BottomSheetBody extends StatelessWidget {
 
   @override
   BottomSheet build(BuildContext context) {
+    // ignore: no_leading_underscores_for_local_identifiers
     final _actions = actions ?? [];
     return BottomSheet(
       builder: (BuildContext context) {

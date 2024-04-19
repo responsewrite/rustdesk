@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_hbb/consts.dart';
@@ -8,7 +7,7 @@ import 'package:flutter_hbb/main.dart';
 import 'package:flutter_hbb/models/chat_model.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:get/get.dart';
-import 'package:wakelock/wakelock.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../common.dart';
@@ -79,10 +78,12 @@ class ServerModel with ChangeNotifier {
 
   setVerificationMethod(String method) async {
     await bind.mainSetOption(key: "verification-method", value: method);
+    /*
     if (method != kUsePermanentPassword) {
       await bind.mainSetOption(
           key: 'allow-hide-cm', value: bool2option('allow-hide-cm', false));
     }
+    */
   }
 
   String get temporaryPasswordLength {
@@ -99,10 +100,12 @@ class ServerModel with ChangeNotifier {
 
   setApproveMode(String mode) async {
     await bind.mainSetOption(key: 'approve-mode', value: mode);
+    /*
     if (mode != 'password') {
       await bind.mainSetOption(
           key: 'allow-hide-cm', value: bool2option('allow-hide-cm', false));
     }
+    */
   }
 
   TextEditingController get serverId => _serverId;
@@ -379,8 +382,8 @@ class ServerModel with ChangeNotifier {
     // ugly is here, because for desktop, below is useless
     await bind.mainStartService();
     updateClientState();
-    if (Platform.isAndroid) {
-      Wakelock.enable();
+    if (isAndroid) {
+      WakelockPlus.enable();
     }
   }
 
@@ -391,9 +394,9 @@ class ServerModel with ChangeNotifier {
     await parent.target?.invokeMethod("stop_service");
     await bind.mainStopService();
     notifyListeners();
-    if (!Platform.isLinux) {
+    if (!isLinux) {
       // current linux is not supported
-      Wakelock.disable();
+      WakelockPlus.disable();
     }
   }
 
@@ -690,6 +693,7 @@ class Client {
   bool file = false;
   bool restart = false;
   bool recording = false;
+  bool blockInput = false;
   bool disconnected = false;
   bool fromSwitch = false;
   bool inVoiceCall = false;
@@ -713,6 +717,7 @@ class Client {
     file = json['file'];
     restart = json['restart'];
     recording = json['recording'];
+    blockInput = json['block_input'];
     disconnected = json['disconnected'];
     fromSwitch = json['from_switch'];
     inVoiceCall = json['in_voice_call'];
@@ -733,6 +738,7 @@ class Client {
     data['file'] = file;
     data['restart'] = restart;
     data['recording'] = recording;
+    data['block_input'] = blockInput;
     data['disconnected'] = disconnected;
     data['from_switch'] = fromSwitch;
     return data;
