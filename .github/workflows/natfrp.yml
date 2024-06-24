@@ -11,31 +11,37 @@ on:
         description: 'Version string in filename'
 
 env:
-  RUST_VERSION: "1.75"
+  WIN_RUST_VERSION: "1.75"
   LLVM_VERSION: "15.0.6"
-  FLUTTER_VERSION: "3.19.5"
+  FLUTTER_VERSION: "3.19.6"
   FLUTTER_RUST_BRIDGE_VERSION: "1.80.1"
-  # vcpkg version: 2023.10.19
-  # for multiarch gcc compatibility
-  VCPKG_COMMIT_ID: "8eb57355a4ffb410a2e94c07b4dca2dffbee8e50"
+  # vcpkg version: 2024.03.25
+  VCPKG_COMMIT_ID: "a34c873a9717a888f58dc05268dea15592c2f0ff"
 
 jobs:
   build-RustDeskTempTopMostWindow:
     uses: ./.github/workflows/third-party-RustDeskTempTopMostWindow.yml
     with:
       upload-artifact: true
-      target: windows-2019
+      target: windows-2022
       configuration: Release
       platform: x64
       target_version: Windows10
 
   build-for-windows-flutter:
-    name: x86_64-pc-windows-msvc (windows-2019)
+    name: x86_64-pc-windows-msvc (windows-2022)
     needs: [build-RustDeskTempTopMostWindow]
-    runs-on: windows-2019
+    runs-on: windows-2022
     steps:
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
       - name: Checkout source code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           ref: ${{ inputs.tag }}
 
@@ -52,10 +58,9 @@ jobs:
         uses: KyleMayes/install-llvm-action@v1
         with:
           version: ${{ env.LLVM_VERSION }}
-          cached: ${{ steps.cache-llvm.outputs.cache-hit }}
 
       - name: Install flutter
-        uses: subosito/flutter-action@v2
+        uses: subosito/flutter-action@v2.12.0 #https://github.com/subosito/flutter-action/issues/277
         with:
           channel: "stable"
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -64,19 +69,18 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@v1
         with:
-          toolchain: ${{ env.RUST_VERSION }}
+          toolchain: ${{ env.WIN_RUST_VERSION }}
           targets: x86_64-pc-windows-msvc
           components: "rustfmt"
 
       - uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: windows-2019
+          prefix-key: windows-2022
 
       - name: Install flutter rust bridge deps
         run: |
           git config --global core.longpaths true
           cargo install flutter_rust_bridge_codegen --version ${{ env.FLUTTER_RUST_BRIDGE_VERSION }} --features "uuid"
-          flutter --disable-telemetry
           Push-Location flutter ; flutter pub get ; Pop-Location
           ~/.cargo/bin/flutter_rust_bridge_codegen --rust-input ./src/flutter_ffi.rs --dart-output ./flutter/lib/generated_bridge.dart
 
@@ -92,7 +96,14 @@ jobs:
         shell: bash
 
       - name: Build rustdesk
-        run: python3 .\build.py --portable --hwcodec --flutter --gpucodec --skip-portable-pack
+        run: |
+          Invoke-WebRequest -Uri https://github.com/rustdesk-org/rdev/releases/download/usbmmidd_v2/usbmmidd_v2.zip -OutFile usbmmidd_v2.zip
+          Expand-Archive usbmmidd_v2.zip -DestinationPath .
+          python3 .\build.py --portable --hwcodec --flutter --vram --skip-portable-pack
+          Remove-Item -Path usbmmidd_v2\Win32 -Recurse
+          Remove-Item -Path "usbmmidd_v2\deviceinstaller64.exe", "usbmmidd_v2\deviceinstaller.exe", "usbmmidd_v2\usbmmidd.bat"
+          mv ./flutter/build/windows/x64/runner/Release ./rustdesk
+          mv -Force .\usbmmidd_v2 ./rustdesk
 
       - name: find Runner.res
         # Windows: find Runner.res (compiled from ./flutter/windows/runner/Runner.rc), copy to ./Runner.res
@@ -114,7 +125,13 @@ jobs:
         uses: actions/download-artifact@master
         with:
           name: topmostwindow-artifacts
-          path: "./flutter/build/windows/x64/runner/Release/"
+          path: "./rustdesk"
+
+      - name: Upload unsigned
+        uses: actions/upload-artifact@master
+        with:
+          name: rustdesk-unsigned-windows-x86_64
+          path: rustdesk
 
       - name: Build self-extracted executable
         shell: bash
@@ -126,10 +143,23 @@ jobs:
           mkdir -p ./SignOutput
           mv ./target/release/rustdesk-portable-packer.exe ./SignOutput/rustdesk-natfrp-${{ inputs.version }}-x86_64.exe
 
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build msi
+        run: |
+          pushd ./res/msi
+          python preprocess.py --arp -d ../../rustdesk
+          nuget restore msi.sln
+          msbuild msi.sln -p:Configuration=Release -p:Platform=x64 /p:TargetVersion=Windows10
+          mv ./Package/bin/x64/Release/en-us/Package.msi ../../SignOutput/rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.msi
+          sha256sum ../../SignOutput/rustdesk-*.msi
+
       - name: Publish Release
         uses: softprops/action-gh-release@v1
         with:
           prerelease: true
           tag_name: ${{ inputs.tag || 'edge' }}
           files: |
+            ./SignOutput/rustdesk-*.msi
             ./SignOutput/rustdesk-*.exe
