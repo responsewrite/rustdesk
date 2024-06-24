@@ -59,14 +59,12 @@ class RustdeskImpl {
   }
 
   String sessionAddExistedSync(
-      {required String id, required UuidValue sessionId, dynamic hint}) {
+      {required String id,
+      required UuidValue sessionId,
+      required Int32List displays,
+      dynamic hint}) {
     return '';
   }
-
-  void sessionTryAddDisplay(
-      {required UuidValue sessionId,
-      required Int32List displays,
-      dynamic hint}) {}
 
   String sessionAddSync(
       {required UuidValue sessionId,
@@ -92,6 +90,14 @@ class RustdeskImpl {
       jsonEncode({'id': id})
     ]);
     return Stream.empty();
+  }
+
+  Stream<EventToUI> sessionStartWithDisplays(
+      {required UuidValue sessionId,
+      required String id,
+      required Int32List displays,
+      dynamic hint}) {
+    throw UnimplementedError();
   }
 
   Future<bool?> sessionGetRemember(
@@ -201,12 +207,6 @@ class RustdeskImpl {
           'option:flutter:peer',
           jsonEncode({'name': k, 'value': v})
         ]));
-  }
-
-  Future<String?> sessionGetFlutterOptionByPeerId(
-      {required String id, required String k, dynamic hint}) {
-    return Future(
-        () => js.context.callMethod('getByName', ['option:flutter:peer', k]));
   }
 
   int getNextTextureKey({dynamic hint}) {
@@ -344,6 +344,10 @@ class RustdeskImpl {
   bool sessionIsKeyboardModeSupported(
       {required UuidValue sessionId, required String mode, dynamic hint}) {
     return mode == kKeyLegacyMode;
+  }
+
+  bool sessionIsMultiUiSession({required UuidValue sessionId, dynamic hint}) {
+    return false;
   }
 
   Future<void> sessionSetCustomImageQuality(
@@ -676,7 +680,8 @@ class RustdeskImpl {
     return Future(() => js.context.callMethod('setByName', ['options', json]));
   }
 
-  Future<String> mainTestIfValidServer({required String server, dynamic hint}) {
+  Future<String> mainTestIfValidServer(
+      {required String server, required bool testWithProxy, dynamic hint}) {
     // TODO: implement
     return Future.value('');
   }
@@ -767,6 +772,24 @@ class RustdeskImpl {
       required String body,
       required String header,
       dynamic hint}) {
+    throw UnimplementedError();
+  }
+
+  Future<bool> mainGetProxyStatus({dynamic hint}) {
+    return Future(() => false);
+  }
+
+  Future<void> mainHttpRequest({
+    required String url,
+    required String method,
+    String? body,
+    required String header,
+    dynamic hint,
+  }) {
+    throw UnimplementedError();
+  }
+
+  Future<String?> mainGetHttpStatus({required String url, dynamic hint}) {
     throw UnimplementedError();
   }
 
@@ -920,7 +943,7 @@ class RustdeskImpl {
     throw UnimplementedError();
   }
 
-  Future<String> mainDefaultVideoSaveDirectory({dynamic hint}) {
+  String mainVideoSaveDirectory({required bool root, dynamic hint}) {
     throw UnimplementedError();
   }
 
@@ -1052,7 +1075,7 @@ class RustdeskImpl {
     throw UnimplementedError();
   }
 
-  bool mainHasGpucodec({dynamic hint}) {
+  bool mainHasVram({dynamic hint}) {
     throw UnimplementedError();
   }
 
@@ -1389,16 +1412,8 @@ class RustdeskImpl {
     return false;
   }
 
-  Future<void> mainStartPa({dynamic hint}) {
-    throw UnimplementedError();
-  }
-
   bool mainHideDocker({dynamic hint}) {
     throw UnimplementedError();
-  }
-
-  bool mainHasPixelbufferTextureRender({dynamic hint}) {
-    return false;
   }
 
   bool mainHasFileClipboard({dynamic hint}) {
@@ -1444,6 +1459,10 @@ class RustdeskImpl {
   }
 
   bool isDisableAb({dynamic hint}) {
+    return false;
+  }
+
+  bool isDisableGroupPanel({dynamic hint}) {
     return false;
   }
 
@@ -1570,6 +1589,28 @@ class RustdeskImpl {
   }
 
   String mainGetHardOption({required String key, dynamic hint}) {
+    throw UnimplementedError();
+  }
+
+  Future<void> mainCheckHwcodec({dynamic hint}) {
+    throw UnimplementedError();
+  }
+
+  Future<void> sessionRequestNewDisplayInitMsgs(
+      {required UuidValue sessionId, required int display, dynamic hint}) {
+    throw UnimplementedError();
+  }
+
+  Future<String> mainHandleWaylandScreencastRestoreToken(
+      {required String key, required String value, dynamic hint}) {
+    throw UnimplementedError();
+  }
+
+  bool mainIsOptionFixed({required String key, dynamic hint}) {
+    throw UnimplementedError();
+  }
+
+  bool mainGetUseTextureRender({dynamic hint}) {
     throw UnimplementedError();
   }
 

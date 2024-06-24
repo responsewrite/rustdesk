@@ -41,7 +41,7 @@ pub fn make_tray() -> hbb_common::ResultType<()> {
     let icon = tray_icon::Icon::from_rgba(icon_rgba, icon_width, icon_height)
         .context("Failed to open icon")?;
 
-    let event_loop = EventLoopBuilder::new().build();
+    let mut event_loop = EventLoopBuilder::new().build();
 
     let tray_menu = Menu::new();
     let quit_i = MenuItem::new(translate("Exit".to_owned()), true, None);
@@ -77,7 +77,6 @@ pub fn make_tray() -> hbb_common::ResultType<()> {
     let tray_channel = TrayEvent::receiver();
     #[cfg(windows)]
     let (ipc_sender, ipc_receiver) = std::sync::mpsc::channel::<Data>();
-    let mut docker_hiden = false;
 
     let open_func = move || {
         if cfg!(not(feature = "flutter")) {
@@ -110,12 +109,12 @@ pub fn make_tray() -> hbb_common::ResultType<()> {
     });
     #[cfg(windows)]
     let mut last_click = std::time::Instant::now();
+    #[cfg(target_os = "macos")]
+    {
+        use tao::platform::macos::EventLoopExtMacOS;
+        event_loop.set_activation_policy(tao::platform::macos::ActivationPolicy::Accessory);
+    }
     event_loop.run(move |_event, _, control_flow| {
-        if !docker_hiden {
-            #[cfg(target_os = "macos")]
-            crate::platform::macos::hide_dock();
-            docker_hiden = true;
-        }
         *control_flow = ControlFlow::WaitUntil(
             std::time::Instant::now() + std::time::Duration::from_millis(100),
         );
@@ -210,6 +209,8 @@ fn load_icon_from_asset() -> Option<image::DynamicImage> {
     let path = path.join("../Frameworks/App.framework/Resources/flutter_assets/assets/icon.png");
     #[cfg(windows)]
     let path = path.join(r"data\flutter_assets\assets\icon.png");
+    #[cfg(target_os = "linux")]
+    let path = path.join(r"data/flutter_assets/assets/icon.png");
     if path.exists() {
         if let Ok(image) = image::open(path) {
             return Some(image);

@@ -16,6 +16,7 @@ use hbb_common::{
     futures::future::join_all,
     log,
     protobuf::Message as _,
+    proxy::Proxy,
     rendezvous_proto::*,
     sleep,
     socket_client::{self, connect_tcp, is_ipv4},
@@ -74,7 +75,7 @@ impl RendezvousMediator {
             crate::test_nat_type();
             nat_tested = true;
         }
-        if !Config::get_option("stop-service").is_empty() {
+        if config::option2bool("stop-service", &Config::get_option("stop-service")) {
             crate::test_rendezvous_server();
         }
         let server_cloned = server.clone();
@@ -88,13 +89,14 @@ impl RendezvousMediator {
             });
         }
         // It is ok to run xdesktop manager when the headless function is not allowed.
-        #[cfg(all(target_os = "linux", feature = "linux_headless"))]
-        #[cfg(not(any(feature = "flatpak", feature = "appimage")))]
-        crate::platform::linux_desktop_manager::start_xdesktop();
+        #[cfg(target_os = "linux")]
+        if crate::is_server() {
+            crate::platform::linux_desktop_manager::start_xdesktop();
+        }
         loop {
             let conn_start_time = Instant::now();
             *SOLVING_PK_MISMATCH.lock().await = "".to_owned();
-            if Config::get_option("stop-service").is_empty()
+            if !config::option2bool("stop-service", &Config::get_option("stop-service"))
                 && !crate::platform::installing_service()
             {
                 if !nat_tested {
@@ -127,11 +129,6 @@ impl RendezvousMediator {
                 }
             }
         }
-        // It should be better to call stop_xdesktop.
-        // But for server, it also is Ok without calling this method.
-        // #[cfg(all(target_os = "linux", feature = "linux_headless"))]
-        // #[cfg(not(any(feature = "flatpak", feature = "appimage")))]
-        // crate::platform::linux_desktop_manager::stop_xdesktop();
     }
 
     fn get_host_prefix(host: &str) -> String {
@@ -388,7 +385,14 @@ impl RendezvousMediator {
 
     pub async fn start(server: ServerPtr, host: String) -> ResultType<()> {
         log::info!("start rendezvous mediator of {}", host);
-        if cfg!(debug_assertions) && option_env!("TEST_TCP").is_some() {
+        //If the investment agent type is http or https, then tcp forwarding is enabled.
+        let is_http_proxy = if let Some(conf) = Config::get_socks() {
+            let proxy = Proxy::from_conf(&conf, None)?;
+            proxy.is_http_or_https()
+        } else {
+            false
+        };
+        if (cfg!(debug_assertions) && option_env!("TEST_TCP").is_some()) || is_http_proxy {
             Self::start_tcp(server, host).await
         } else {
             Self::start_udp(server, host).await

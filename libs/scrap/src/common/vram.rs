@@ -1,30 +1,29 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ffi::c_void,
     sync::{Arc, Mutex},
 };
 
 use crate::{
-    codec::{base_bitrate, enable_gpucodec_option, EncoderApi, EncoderCfg, Quality},
-    AdapterDevice, CodecFormat, CodecName, EncodeInput, EncodeYuvFormat, Pixfmt,
-};
-use gpucodec::gpu_common::{
-    self, Available, DecodeContext, DynamicContext, EncodeContext, FeatureContext, MAX_GOP,
-};
-use gpucodec::{
-    decode::{self, DecodeFrame, Decoder},
-    encode::{self, EncodeFrame, Encoder},
+    codec::{base_bitrate, enable_vram_option, EncoderApi, EncoderCfg, Quality},
+    hwcodec::HwCodecConfig,
+    AdapterDevice, CodecFormat, EncodeInput, EncodeYuvFormat, Pixfmt,
 };
 use hbb_common::{
-    allow_err,
     anyhow::{anyhow, bail, Context},
     bytes::Bytes,
     log,
     message_proto::{EncodedVideoFrame, EncodedVideoFrames, VideoFrame},
     ResultType,
 };
-
-const OUTPUT_SHARED_HANDLE: bool = false;
+use hwcodec::{
+    common::{AdapterVendor::*, DataFormat, Driver, MAX_GOP},
+    vram::{
+        decode::{self, DecodeFrame, Decoder},
+        encode::{self, EncodeFrame, Encoder},
+        Available, DecodeContext, DynamicContext, EncodeContext, FeatureContext,
+    },
+};
 
 // https://www.reddit.com/r/buildapc/comments/d2m4ny/two_graphics_cards_two_monitors/
 // https://www.reddit.com/r/techsupport/comments/t2v9u6/dual_monitor_setup_with_dual_gpu/
@@ -32,34 +31,36 @@ const OUTPUT_SHARED_HANDLE: bool = false;
 // https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12device-getadapterluid#remarks
 lazy_static::lazy_static! {
     static ref ENOCDE_NOT_USE: Arc<Mutex<HashMap<usize, bool>>> = Default::default();
+    static ref FALLBACK_GDI_DISPLAYS: Arc<Mutex<HashSet<usize>>> = Default::default();
 }
 
 #[derive(Debug, Clone)]
-pub struct GpuEncoderConfig {
+pub struct VRamEncoderConfig {
     pub device: AdapterDevice,
     pub width: usize,
     pub height: usize,
     pub quality: Quality,
-    pub feature: gpucodec::gpu_common::FeatureContext,
+    pub feature: FeatureContext,
     pub keyframe_interval: Option<usize>,
 }
 
-pub struct GpuEncoder {
+pub struct VRamEncoder {
     encoder: Encoder,
-    pub format: gpu_common::DataFormat,
+    pub format: DataFormat,
     ctx: EncodeContext,
     bitrate: u32,
     last_frame_len: usize,
     same_bad_len_counter: usize,
+    config: VRamEncoderConfig,
 }
 
-impl EncoderApi for GpuEncoder {
+impl EncoderApi for VRamEncoder {
     fn new(cfg: EncoderCfg, _i444: bool) -> ResultType<Self>
     where
         Self: Sized,
     {
         match cfg {
-            EncoderCfg::GPU(config) => {
+            EncoderCfg::VRAM(config) => {
                 let b = Self::convert_quality(config.quality, &config.feature);
                 let base_bitrate = base_bitrate(config.width as _, config.height as _);
                 let mut bitrate = base_bitrate * b / 100;
@@ -79,18 +80,16 @@ impl EncoderApi for GpuEncoder {
                     },
                 };
                 match Encoder::new(ctx.clone()) {
-                    Ok(encoder) => Ok(GpuEncoder {
+                    Ok(encoder) => Ok(VRamEncoder {
                         encoder,
                         ctx,
                         format: config.feature.data_format,
                         bitrate,
                         last_frame_len: 0,
                         same_bad_len_counter: 0,
+                        config,
                     }),
-                    Err(_) => {
-                        hbb_common::config::GpucodecConfig::clear();
-                        Err(anyhow!(format!("Failed to create encoder")))
-                    }
+                    Err(_) => Err(anyhow!(format!("Failed to create encoder"))),
                 }
             }
             _ => Err(anyhow!("encoder type mismatch")),
@@ -100,15 +99,18 @@ impl EncoderApi for GpuEncoder {
     fn encode_to_message(
         &mut self,
         frame: EncodeInput,
-        _ms: i64,
+        ms: i64,
     ) -> ResultType<hbb_common::message_proto::VideoFrame> {
         let texture = frame.texture()?;
         let mut vf = VideoFrame::new();
         let mut frames = Vec::new();
-        for frame in self.encode(texture).with_context(|| "Failed to encode")? {
+        for frame in self
+            .encode(texture, ms)
+            .with_context(|| "Failed to encode")?
+        {
             frames.push(EncodedVideoFrame {
                 data: Bytes::from(frame.data),
-                pts: frame.pts as _,
+                pts: frame.pts,
                 key: frame.key == 1,
                 ..Default::default()
             });
@@ -138,8 +140,8 @@ impl EncoderApi for GpuEncoder {
                 ..Default::default()
             };
             match self.format {
-                gpu_common::DataFormat::H264 => vf.set_h264s(frames),
-                gpu_common::DataFormat::H265 => vf.set_h265s(frames),
+                DataFormat::H264 => vf.set_h264s(frames),
+                DataFormat::H265 => vf.set_h265s(frames),
                 _ => bail!("{:?} not supported", self.format),
             }
             Ok(vf)
@@ -160,7 +162,7 @@ impl EncoderApi for GpuEncoder {
         }
     }
 
-    #[cfg(feature = "gpucodec")]
+    #[cfg(feature = "vram")]
     fn input_texture(&self) -> bool {
         true
     }
@@ -181,65 +183,94 @@ impl EncoderApi for GpuEncoder {
     }
 
     fn support_abr(&self) -> bool {
-        self.ctx.f.driver != gpu_common::EncodeDriver::VPL
+        self.config.device.vendor_id != ADAPTER_VENDOR_INTEL as u32
+    }
+
+    fn support_changing_quality(&self) -> bool {
+        true
+    }
+
+    fn latency_free(&self) -> bool {
+        true
+    }
+
+    fn is_hardware(&self) -> bool {
+        true
+    }
+
+    fn disable(&self) {
+        HwCodecConfig::clear(true, true);
     }
 }
 
-impl GpuEncoder {
-    pub fn try_get(device: &AdapterDevice, name: CodecName) -> Option<FeatureContext> {
-        let v: Vec<_> = Self::available(name)
+impl VRamEncoder {
+    pub fn try_get(device: &AdapterDevice, format: CodecFormat) -> Option<FeatureContext> {
+        let v: Vec<_> = Self::available(format)
             .drain(..)
             .filter(|e| e.luid == device.luid)
             .collect();
         if v.len() > 0 {
+            // prefer ffmpeg
+            if let Some(ctx) = v.iter().find(|c| c.driver == Driver::FFMPEG) {
+                return Some(ctx.clone());
+            }
             Some(v[0].clone())
         } else {
             None
         }
     }
 
-    pub fn available(name: CodecName) -> Vec<FeatureContext> {
+    pub fn available(format: CodecFormat) -> Vec<FeatureContext> {
+        let fallbacks = FALLBACK_GDI_DISPLAYS.lock().unwrap().clone();
+        if !fallbacks.is_empty() {
+            log::info!("fallback gdi displays not empty: {fallbacks:?}");
+            return vec![];
+        }
         let not_use = ENOCDE_NOT_USE.lock().unwrap().clone();
         if not_use.values().any(|not_use| *not_use) {
-            log::info!("currently not use gpucodec encoders: {not_use:?}");
+            log::info!("currently not use vram encoders: {not_use:?}");
             return vec![];
         }
-        let data_format = match name {
-            CodecName::H264GPU => gpu_common::DataFormat::H264,
-            CodecName::H265GPU => gpu_common::DataFormat::H265,
+        let data_format = match format {
+            CodecFormat::H264 => DataFormat::H264,
+            CodecFormat::H265 => DataFormat::H265,
             _ => return vec![],
         };
-        let Ok(displays) = crate::Display::all() else {
-            log::error!("failed to get displays");
-            return vec![];
-        };
-        if displays.is_empty() {
-            log::error!("no display found");
-            return vec![];
-        }
-        let luids = displays
-            .iter()
-            .map(|d| d.adapter_luid())
-            .collect::<Vec<_>>();
-        let v: Vec<_> = get_available_config()
-            .map(|c| c.e)
-            .unwrap_or_default()
+        let v: Vec<_> = crate::hwcodec::HwCodecConfig::get()
+            .vram_encode
             .drain(..)
             .filter(|c| c.data_format == data_format)
             .collect();
-        if luids
-            .iter()
-            .all(|luid| v.iter().any(|f| Some(f.luid) == *luid))
-        {
+        if crate::hwcodec::HwRamEncoder::try_get(format).is_some() {
+            // has fallback, no need to require all adapters support
             v
         } else {
-            log::info!("not all adapters support {data_format:?}, luids = {luids:?}");
-            vec![]
+            let Ok(displays) = crate::Display::all() else {
+                log::error!("failed to get displays");
+                return vec![];
+            };
+            if displays.is_empty() {
+                log::error!("no display found");
+                return vec![];
+            }
+            let luids = displays
+                .iter()
+                .map(|d| d.adapter_luid())
+                .collect::<Vec<_>>();
+            if luids
+                .iter()
+                .all(|luid| v.iter().any(|f| Some(f.luid) == *luid))
+            {
+                v
+            } else {
+                log::info!("not all adapters support {data_format:?}, luids = {luids:?}");
+                vec![]
+            }
         }
     }
 
-    pub fn encode(&mut self, texture: *mut c_void) -> ResultType<Vec<EncodeFrame>> {
-        match self.encoder.encode(texture) {
+    pub fn encode(&mut self, texture: *mut c_void, ms: i64) -> ResultType<Vec<EncodeFrame>> {
+        match self.encoder.encode(texture, ms) {
             Ok(v) => {
                 let mut data = Vec::<EncodeFrame>::new();
                 data.append(v);
@@ -252,27 +283,21 @@ impl GpuEncoder {
     pub fn convert_quality(quality: Quality, f: &FeatureContext) -> u32 {
         match quality {
             Quality::Best => {
-                if f.driver == gpu_common::EncodeDriver::VPL
-                    && f.data_format == gpu_common::DataFormat::H264
-                {
+                if f.driver == Driver::MFX && f.data_format == DataFormat::H264 {
                     200
                 } else {
                     150
                 }
             }
             Quality::Balanced => {
-                if f.driver == gpu_common::EncodeDriver::VPL
-                    && f.data_format == gpu_common::DataFormat::H264
-                {
+                if f.driver == Driver::MFX && f.data_format == DataFormat::H264 {
                     150
                 } else {
                     100
                 }
             }
             Quality::Low => {
-                if f.driver == gpu_common::EncodeDriver::VPL
-                    && f.data_format == gpu_common::DataFormat::H264
-                {
+                if f.driver == Driver::MFX && f.data_format == DataFormat::H264 {
                     75
                 } else {
                     50
@@ -283,29 +308,31 @@ impl GpuEncoder {
     }
 
     pub fn set_not_use(display: usize, not_use: bool) {
-        log::info!("set display#{display} not use gpucodec encode to {not_use}");
+        log::info!("set display#{display} not use vram encode to {not_use}");
         ENOCDE_NOT_USE.lock().unwrap().insert(display, not_use);
     }
 
-    pub fn not_use() -> bool {
-        ENOCDE_NOT_USE.lock().unwrap().iter().any(|v| *v.1)
+    pub fn set_fallback_gdi(display: usize, fallback: bool) {
+        if fallback {
+            FALLBACK_GDI_DISPLAYS.lock().unwrap().insert(display);
+        } else {
+            FALLBACK_GDI_DISPLAYS.lock().unwrap().remove(&display);
+        }
     }
 }
 
-pub struct GpuDecoder {
+pub struct VRamDecoder {
     decoder: Decoder,
 }
 
-#[derive(Default)]
-pub struct GpuDecoders {
-    pub h264: Option<GpuDecoder>,
-    pub h265: Option<GpuDecoder>,
-}
-
-impl GpuDecoder {
+impl VRamDecoder {
     pub fn try_get(format: CodecFormat, luid: Option<i64>) -> Option<DecodeContext> {
         let v: Vec<_> = Self::available(format, luid);
         if v.len() > 0 {
+            // prefer ffmpeg
+            if let Some(ctx) = v.iter().find(|c| c.driver == Driver::FFMPEG) {
+                return Some(ctx.clone());
+            }
             Some(v[0].clone())
         } else {
             None
@@ -315,38 +342,35 @@ impl GpuDecoder {
     pub fn available(format: CodecFormat, luid: Option<i64>) -> Vec<DecodeContext> {
         let luid = luid.unwrap_or_default();
         let data_format = match format {
-            CodecFormat::H264 => gpu_common::DataFormat::H264,
-            CodecFormat::H265 => gpu_common::DataFormat::H265,
+            CodecFormat::H264 => DataFormat::H264,
+            CodecFormat::H265 => DataFormat::H265,
             _ => return vec![],
         };
-        get_available_config()
-            .map(|c| c.d)
-            .unwrap_or_default()
+        crate::hwcodec::HwCodecConfig::get()
+            .vram_decode
             .drain(..)
             .filter(|c| c.data_format == data_format && c.luid == luid && luid != 0)
             .collect()
     }
 
     pub fn possible_available_without_check() -> (bool, bool) {
-        if !enable_gpucodec_option() {
+        if !enable_vram_option(false) {
             return (false, false);
         }
-        let v = get_available_config().map(|c| c.d).unwrap_or_default();
+        let v = crate::hwcodec::HwCodecConfig::get().vram_decode;
         (
-            v.iter()
-                .any(|d| d.data_format == gpu_common::DataFormat::H264),
-            v.iter()
-                .any(|d| d.data_format == gpu_common::DataFormat::H265),
+            v.iter().any(|d| d.data_format == DataFormat::H264),
+            v.iter().any(|d| d.data_format == DataFormat::H265),
         )
     }
 
     pub fn new(format: CodecFormat, luid: Option<i64>) -> ResultType<Self> {
-        log::info!("try create {format:?} vram decoder, luid: {luid:?}");
         let ctx = Self::try_get(format, luid).ok_or(anyhow!("Failed to get decode context"))?;
+        log::info!("try create vram decoder: {ctx:?}");
         match Decoder::new(ctx) {
             Ok(decoder) => Ok(Self { decoder }),
             Err(_) => {
-                hbb_common::config::GpucodecConfig::clear();
+                HwCodecConfig::clear(true, false);
                 Err(anyhow!(format!(
                     "Failed to create decoder, format: {:?}",
                     format
@@ -354,91 +378,38 @@ impl GpuDecoder {
             }
         }
     }
-    pub fn decode(&mut self, data: &[u8]) -> ResultType<Vec<GpuDecoderImage>> {
+    pub fn decode(&mut self, data: &[u8]) -> ResultType<Vec<VRamDecoderImage>> {
         match self.decoder.decode(data) {
-            Ok(v) => Ok(v.iter().map(|f| GpuDecoderImage { frame: f }).collect()),
+            Ok(v) => Ok(v.iter().map(|f| VRamDecoderImage { frame: f }).collect()),
             Err(e) => Err(anyhow!(e)),
         }
     }
 }
 
-pub struct GpuDecoderImage<'a> {
+pub struct VRamDecoderImage<'a> {
     pub frame: &'a DecodeFrame,
 }
 
-impl GpuDecoderImage<'_> {}
+impl VRamDecoderImage<'_> {}
 
-fn get_available_config() -> ResultType<Available> {
-    let available = hbb_common::config::GpucodecConfig::load().available;
-    match Available::deserialize(&available) {
-        Ok(v) => Ok(v),
-        Err(_) => Err(anyhow!("Failed to deserialize:{}", available)),
-    }
-}
-
-pub fn check_available_gpucodec() {
+pub(crate) fn check_available_vram() -> (Vec<FeatureContext>, Vec<DecodeContext>, String) {
     let d = DynamicContext {
         device: None,
-        width: 1920,
-        height: 1080,
+        width: 1280,
+        height: 720,
         kbitrate: 5000,
         framerate: 60,
         gop: MAX_GOP as _,
     };
     let encoders = encode::available(d);
-    let decoders = decode::available(OUTPUT_SHARED_HANDLE);
+    let decoders = decode::available();
     let available = Available {
-        e: encoders,
-        d: decoders,
+        e: encoders.clone(),
+        d: decoders.clone(),
     };
-
-    if let Ok(available) = available.serialize() {
-        let mut config = hbb_common::config::GpucodecConfig::load();
-        config.available = available;
-        config.store();
-        return;
-    }
-    log::error!("Failed to serialize gpucodec");
-}
-
-pub fn gpucodec_new_check_process() {
-    use std::sync::Once;
-
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
-        std::thread::spawn(move || {
-            // Remove to avoid checking process errors
-            // But when the program is just started, the configuration file has not been updated, and the new connection will read an empty configuration
-            hbb_common::config::GpucodecConfig::clear();
-            if let Ok(exe) = std::env::current_exe() {
-                let arg = "--check-gpucodec-config";
-                if let Ok(mut child) = std::process::Command::new(exe).arg(arg).spawn() {
-                    // wait up to 30 seconds
-                    for _ in 0..30 {
-                        std::thread::sleep(std::time::Duration::from_secs(1));
-                        if let Ok(Some(_)) = child.try_wait() {
-                            break;
-                        }
-                    }
-                    allow_err!(child.kill());
-                    std::thread::sleep(std::time::Duration::from_millis(30));
-                    match child.try_wait() {
-                        Ok(Some(status)) => {
-                            log::info!("Check gpucodec config, exit with: {status}")
-                        }
-                        Ok(None) => {
-                            log::info!(
-                                "Check gpucodec config, status not ready yet, let's really wait"
-                            );
-                            let res = child.wait();
-                            log::info!("Check gpucodec config, wait result: {res:?}");
-                        }
-                        Err(e) => {
-                            log::error!("Check gpucodec config, error attempting to wait: {e}")
-                        }
-                    }
-                }
-            };
-        });
-    });
+    (
+        encoders,
+        decoders,
+        available.serialize().unwrap_or_default(),
+    )
 }

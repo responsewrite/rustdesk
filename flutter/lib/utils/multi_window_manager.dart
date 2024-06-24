@@ -6,6 +6,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/common.dart';
+import 'package:flutter_hbb/main.dart';
+import 'package:flutter_hbb/models/input_model.dart';
 
 /// must keep the order
 // ignore: constant_identifier_names
@@ -172,7 +174,9 @@ class RustDeskMultiWindowManager {
                   windowId: windowId, peerId: remoteId);
             }
             await DesktopMultiWindow.invokeMethod(windowId, methodName, msg);
-            WindowController.fromWindowId(windowId).show();
+            if (methodName != kWindowEventNewRemoteDesktop) {
+              WindowController.fromWindowId(windowId).show();
+            }
             registerActiveWindow(windowId);
             return MultiWindowCallResult(windowId, null);
           }
@@ -332,10 +336,10 @@ class RustDeskMultiWindowManager {
   }
 
   Future<void> closeAllSubWindows() async {
-    await Future.wait(WindowType.values.map((e) => closeWindows(e)));
+    await Future.wait(WindowType.values.map((e) => _closeWindows(e)));
   }
 
-  Future<void> closeWindows(WindowType type) async {
+  Future<void> _closeWindows(WindowType type) async {
     if (type == WindowType.Main) {
       // skip main window, use window manager instead
       return;
@@ -343,7 +347,7 @@ class RustDeskMultiWindowManager {
 
     List<int> windows = [];
     try {
-      windows = await DesktopMultiWindow.getAllSubWindowIds();
+      windows = _findWindowsByType(type);
     } catch (e) {
       debugPrint('Failed to getAllSubWindowIds of $type, $e');
       return;
@@ -353,14 +357,9 @@ class RustDeskMultiWindowManager {
       return;
     }
     for (final wId in windows) {
-      debugPrint("closing multi window: ${type.toString()}");
+      debugPrint("closing multi window, type: ${type.toString()} id: $wId");
       await saveWindowPosition(type, windowId: wId);
       try {
-        // final ids = await DesktopMultiWindow.getAllSubWindowIds();
-        // if (!ids.contains(wId)) {
-        //   // no such window already
-        //   return;
-        // }
         await WindowController.fromWindowId(wId).setPreventClose(false);
         await WindowController.fromWindowId(wId).close();
         _activeWindows.remove(wId);
@@ -369,7 +368,6 @@ class RustDeskMultiWindowManager {
         return;
       }
     }
-    await _notifyActiveWindow();
     clearWindowType(type);
   }
 
@@ -402,14 +400,6 @@ class RustDeskMultiWindowManager {
     await _notifyActiveWindow();
   }
 
-  Future<void> destroyWindow(int windowId) async {
-    await WindowController.fromWindowId(windowId).setPreventClose(false);
-    await WindowController.fromWindowId(windowId).close();
-    _remoteDesktopWindows.remove(windowId);
-    _fileTransferWindows.remove(windowId);
-    _portForwardWindows.remove(windowId);
-  }
-
   /// Remove active window which has [`windowId`]
   ///
   /// [Availability]
@@ -430,6 +420,39 @@ class RustDeskMultiWindowManager {
 
   void unregisterActiveWindowListener(AsyncCallback callback) {
     _windowActiveCallbacks.remove(callback);
+  }
+
+  // This function is called from the main window.
+  // It will query the active remote windows to get their coords.
+  Future<List<String>> getOtherRemoteWindowCoords(int wId) async {
+    List<String> coords = [];
+    for (final windowId in _remoteDesktopWindows) {
+      if (windowId != wId) {
+        if (_activeWindows.contains(windowId)) {
+          final res = await DesktopMultiWindow.invokeMethod(
+              windowId, kWindowEventRemoteWindowCoords, '');
+          if (res != null) {
+            coords.add(res);
+          }
+        }
+      }
+    }
+    return coords;
+  }
+
+  // This function is called from one remote window.
+  // Only the main window knows `_remoteDesktopWindows` and `_activeWindows`.
+  // So we need to call the main window to get the other remote windows' coords.
+  Future<List<RemoteWindowCoords>> getOtherRemoteWindowCoordsFromMain() async {
+    List<RemoteWindowCoords> coords = [];
+    // Call the main window to get the coords of other remote windows.
+    String res = await DesktopMultiWindow.invokeMethod(
+        kMainWindowId, kWindowEventRemoteWindowCoords, kWindowId.toString());
+    List<dynamic> list = jsonDecode(res);
+    for (var item in list) {
+      coords.add(RemoteWindowCoords.fromJson(jsonDecode(item)));
+    }
+    return coords;
   }
 }
 
