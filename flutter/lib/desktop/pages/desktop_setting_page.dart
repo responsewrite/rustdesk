@@ -1733,7 +1733,7 @@ class _AboutState extends State<_About> {
                           .marginSymmetric(vertical: 4.0)),
                   InkWell(
                       onTap: () {
-                        launchUrlString('https://rustdesk.com/privacy.html');
+                        'RustDesk ${launchUrlString('https://rustdesk.com/privacy.html')}';
                       },
                       child: Text(
                         translate('Privacy Statement'),
@@ -1744,7 +1744,15 @@ class _AboutState extends State<_About> {
                         launchUrlString('https://rustdesk.com');
                       },
                       child: Text(
-                        translate('Website'),
+                        'RustDesk ${translate('Website')}',
+                        style: linkStyle,
+                      ).marginSymmetric(vertical: 4.0)),
+                  InkWell(
+                      onTap: () {
+                        launchUrlString('https://github.com/natfrp/rustdesk');
+                      },
+                      child: Text(
+                        '由 SakuraFrp 提供的构建',
                         style: linkStyle,
                       ).marginSymmetric(vertical: 4.0)),
                   Container(
