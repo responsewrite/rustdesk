@@ -353,7 +353,7 @@ class Draggable extends StatefulWidget {
   final Widget Function(BuildContext, GestureDragUpdateCallback) builder;
 
   @override
-  State<StatefulWidget> createState() => _DraggableState();
+  State<StatefulWidget> createState() => _DraggableState(chatModel);
 }
 
 class _DraggableState extends State<Draggable> {
@@ -362,10 +362,8 @@ class _DraggableState extends State<Draggable> {
   double _saveHeight = 0;
   double _lastBottomHeight = 0;
 
-  @override
-  void initState() {
-    super.initState();
-    _chatModel = widget.chatModel;
+  _DraggableState(ChatModel? chatModel) {
+    _chatModel = chatModel;
   }
 
   get position => widget.position.pos;
@@ -467,7 +465,8 @@ class IOSDraggable extends StatefulWidget {
   final Widget Function(BuildContext) builder;
 
   @override
-  IOSDraggableState createState() => IOSDraggableState();
+  IOSDraggableState createState() =>
+      IOSDraggableState(chatModel, width, height);
 }
 
 class IOSDraggableState extends State<IOSDraggable> {
@@ -478,15 +477,13 @@ class IOSDraggableState extends State<IOSDraggable> {
   double _saveHeight = 0;
   double _lastBottomHeight = 0;
 
-  @override
-  void initState() {
-    super.initState();
-    _chatModel = widget.chatModel;
-    _width = widget.width;
-    _height = widget.height;
+  IOSDraggableState(ChatModel? chatModel, double w, double h) {
+    _chatModel = chatModel;
+    _width = w;
+    _height = h;
   }
 
-  get position => widget.position;
+  DraggableKeyPosition get position => widget.position;
 
   checkKeyboard() {
     final bottomHeight = MediaQuery.of(context).viewInsets.bottom;
@@ -494,13 +491,13 @@ class IOSDraggableState extends State<IOSDraggable> {
 
     // save
     if (!_keyboardVisible && currentVisible) {
-      _saveHeight = position.value.dy;
+      _saveHeight = position.pos.dy;
     }
 
     // reset
     if (_lastBottomHeight > 0 && bottomHeight == 0) {
       setState(() {
-        position.value = Offset(position.value.dx, _saveHeight);
+        position.update(Offset(position.pos.dx, _saveHeight));
       });
     }
 
@@ -508,10 +505,10 @@ class IOSDraggableState extends State<IOSDraggable> {
     if (_keyboardVisible && currentVisible) {
       final sumHeight = bottomHeight + _height;
       final contextHeight = MediaQuery.of(context).size.height;
-      if (sumHeight + position.value.dy > contextHeight) {
+      if (sumHeight + position.pos.dy > contextHeight) {
         final y = contextHeight - sumHeight;
         setState(() {
-          position.value = Offset(position.value.dx, y);
+          position.update(Offset(position.pos.dx, y));
         });
       }
     }
@@ -526,14 +523,14 @@ class IOSDraggableState extends State<IOSDraggable> {
     return Stack(
       children: [
         Positioned(
-          left: position.value.dx,
-          top: position.value.dy,
+          left: position.pos.dx,
+          top: position.pos.dy,
           child: GestureDetector(
             onPanUpdate: (details) {
               setState(() {
-                position.value += details.delta;
+                position.update(position.pos + details.delta);
               });
-              _chatModel?.setChatWindowPosition(position.value);
+              _chatModel?.setChatWindowPosition(position.pos);
             },
             child: Material(
               child: Container(

@@ -10,6 +10,7 @@ use std::{
 };
 
 use anyhow::Result;
+use bytes::Bytes;
 use rand::Rng;
 use regex::Regex;
 use serde as de;
@@ -52,6 +53,7 @@ lazy_static::lazy_static! {
     static ref CONFIG: RwLock<Config> = RwLock::new(Config::load());
     static ref CONFIG2: RwLock<Config2> = RwLock::new(Config2::load());
     static ref LOCAL_CONFIG: RwLock<LocalConfig> = RwLock::new(LocalConfig::load());
+    static ref TRUSTED_DEVICES: RwLock<(Vec<TrustedDevice>, bool)> = Default::default();
     static ref ONLINE: Mutex<HashMap<String, i64>> = Default::default();
     pub static ref PROD_RENDEZVOUS_SERVER: RwLock<String> = RwLock::new(match option_env!("RENDEZVOUS_SERVER") {
         Some(key) if !key.is_empty() => key,
@@ -69,6 +71,7 @@ lazy_static::lazy_static! {
     pub static ref DEFAULT_LOCAL_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
     pub static ref OVERWRITE_LOCAL_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
     pub static ref HARD_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
+    pub static ref BUILTIN_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
 }
 
 lazy_static::lazy_static! {
@@ -207,6 +210,10 @@ pub struct Config2 {
     nat_type: i32,
     #[serde(default, deserialize_with = "deserialize_i32")]
     serial: i32,
+    #[serde(default, deserialize_with = "deserialize_string")]
+    unlock_pin: String,
+    #[serde(default, deserialize_with = "deserialize_string")]
+    trusted_devices: String,
 
     #[serde(default)]
     socks: Option<Socks5Server>,
@@ -426,14 +433,20 @@ fn patch(path: PathBuf) -> PathBuf {
 impl Config2 {
     fn load() -> Config2 {
         let mut config = Config::load_::<Config2>("2");
+        let mut store = false;
         if let Some(mut socks) = config.socks {
-            let (password, _, store) =
+            let (password, _, store2) =
                 decrypt_str_or_original(&socks.password, PASSWORD_ENC_VERSION);
             socks.password = password;
             config.socks = Some(socks);
-            if store {
-                config.store();
-            }
+            store |= store2;
+        }
+        let (unlock_pin, _, store2) =
+            decrypt_str_or_original(&config.unlock_pin, PASSWORD_ENC_VERSION);
+        config.unlock_pin = unlock_pin;
+        store |= store2;
+        if store {
+            config.store();
         }
         config
     }
@@ -449,6 +462,8 @@ impl Config2 {
                 encrypt_str_or_original(&socks.password, PASSWORD_ENC_VERSION, ENCRYPT_MAX_LEN);
             config.socks = Some(socks);
         }
+        config.unlock_pin =
+            encrypt_str_or_original(&config.unlock_pin, PASSWORD_ENC_VERSION, ENCRYPT_MAX_LEN);
         Config::store_(&config, "2");
     }
 
@@ -487,7 +502,19 @@ pub fn load_path<T: serde::Serialize + serde::de::DeserializeOwned + Default + s
 
 #[inline]
 pub fn store_path<T: serde::Serialize>(path: PathBuf, cfg: T) -> crate::ResultType<()> {
-    Ok(confy::store_path(path, cfg)?)
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        Ok(confy::store_path_perms(
+            path,
+            cfg,
+            fs::Permissions::from_mode(0o600),
+        )?)
+    }
+    #[cfg(windows)]
+    {
+        Ok(confy::store_path(path, cfg)?)
+    }
 }
 
 impl Config {
@@ -975,6 +1002,7 @@ impl Config {
         }
         config.password = password.into();
         config.store();
+        Self::clear_trusted_devices();
     }
 
     pub fn get_permanent_password() -> String {
@@ -1066,6 +1094,77 @@ impl Config {
             return NetworkType::ProxySocks;
         }
         NetworkType::Direct
+    }
+
+    pub fn get_unlock_pin() -> String {
+        CONFIG2.read().unwrap().unlock_pin.clone()
+    }
+
+    pub fn set_unlock_pin(pin: &str) {
+        let mut config = CONFIG2.write().unwrap();
+        if pin == config.unlock_pin {
+            return;
+        }
+        config.unlock_pin = pin.to_string();
+        config.store();
+    }
+
+    pub fn get_trusted_devices_json() -> String {
+        serde_json::to_string(&Self::get_trusted_devices()).unwrap_or_default()
+    }
+
+    pub fn get_trusted_devices() -> Vec<TrustedDevice> {
+        let (devices, synced) = TRUSTED_DEVICES.read().unwrap().clone();
+        if synced {
+            return devices;
+        }
+        let devices = CONFIG2.read().unwrap().trusted_devices.clone();
+        let (devices, succ, store) = decrypt_str_or_original(&devices, PASSWORD_ENC_VERSION);
+        if succ {
+            let mut devices: Vec<TrustedDevice> =
+                serde_json::from_str(&devices).unwrap_or_default();
+            let len = devices.len();
+            devices.retain(|d| !d.outdate());
+            if store || devices.len() != len {
+                Self::set_trusted_devices(devices.clone());
+            }
+            *TRUSTED_DEVICES.write().unwrap() = (devices.clone(), true);
+            devices
+        } else {
+            Default::default()
+        }
+    }
+
+    fn set_trusted_devices(mut trusted_devices: Vec<TrustedDevice>) {
+        trusted_devices.retain(|d| !d.outdate());
+        let devices = serde_json::to_string(&trusted_devices).unwrap_or_default();
+        let max_len = 1024 * 1024;
+        if devices.bytes().len() > max_len {
+            log::error!("Trusted devices too large: {}", devices.bytes().len());
+            return;
+        }
+        let devices = encrypt_str_or_original(&devices, PASSWORD_ENC_VERSION, max_len);
+        let mut config = CONFIG2.write().unwrap();
+        config.trusted_devices = devices;
+        config.store();
+        *TRUSTED_DEVICES.write().unwrap() = (trusted_devices, true);
+    }
+
+    pub fn add_trusted_device(device: TrustedDevice) {
+        let mut devices = Self::get_trusted_devices();
+        devices.retain(|d| d.hwid != device.hwid);
+        devices.push(device);
+        Self::set_trusted_devices(devices);
+    }
+
+    pub fn remove_trusted_devices(hwids: &Vec<Bytes>) {
+        let mut devices = Self::get_trusted_devices();
+        devices.retain(|d| !hwids.contains(&d.hwid));
+        Self::set_trusted_devices(devices);
+    }
+
+    pub fn clear_trusted_devices() {
+        Self::set_trusted_devices(Default::default());
     }
 
     pub fn get() -> Config {
@@ -1898,6 +1997,22 @@ impl Group {
     }
 }
 
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+pub struct TrustedDevice {
+    pub hwid: Bytes,
+    pub time: i64,
+    pub id: String,
+    pub name: String,
+    pub platform: String,
+}
+
+impl TrustedDevice {
+    pub fn outdate(&self) -> bool {
+        const DAYS_90: i64 = 90 * 24 * 60 * 60 * 1000;
+        self.time + DAYS_90 < crate::get_time()
+    }
+}
+
 deserialize_default!(deserialize_string, String);
 deserialize_default!(deserialize_bool, bool);
 deserialize_default!(deserialize_i32, i32);
@@ -2087,6 +2202,22 @@ pub mod keys {
     pub const OPTION_ENABLE_DIRECTX_CAPTURE: &str = "enable-directx-capture";
     pub const OPTION_ENABLE_ANDROID_SOFTWARE_ENCODING_HALF_SCALE: &str =
         "enable-android-software-encoding-half-scale";
+    pub const OPTION_ENABLE_TRUSTED_DEVICES: &str = "enable-trusted-devices";
+
+    // buildin options
+    pub const OPTION_DISPLAY_NAME: &str = "display-name";
+    pub const OPTION_DISABLE_UDP: &str = "disable-udp";
+    pub const OPTION_PRESET_USERNAME: &str = "preset-user-name";
+    pub const OPTION_PRESET_STRATEGY_NAME: &str = "preset-strategy-name";
+    pub const OPTION_REMOVE_PRESET_PASSWORD_WARNING: &str = "remove-preset-password-warning";
+    pub const OPTION_HIDE_SECURITY_SETTINGS: &str = "hide-security-settings";
+    pub const OPTION_HIDE_NETWORK_SETTINGS: &str = "hide-network-settings";
+    pub const OPTION_HIDE_SERVER_SETTINGS: &str = "hide-server-settings";
+    pub const OPTION_HIDE_PROXY_SETTINGS: &str = "hide-proxy-settings";
+    pub const OPTION_HIDE_USERNAME_ON_CARD: &str = "hide-username-on-card";
+    pub const OPTION_HIDE_HELP_CARDS: &str = "hide-help-cards";
+    pub const OPTION_DEFAULT_CONNECT_PASSWORD: &str = "default-connect-password";
+    pub const OPTION_HIDE_TRAY: &str = "hide-tray";
 
     // flutter local options
     pub const OPTION_FLUTTER_REMOTE_MENUBAR_STATE: &str = "remoteMenubarState";
@@ -2096,6 +2227,7 @@ pub mod keys {
     pub const OPTION_FLUTTER_PEER_TAB_VISIBLE: &str = "peer-tab-visible";
     pub const OPTION_FLUTTER_PEER_CARD_UI_TYLE: &str = "peer-card-ui-type";
     pub const OPTION_FLUTTER_CURRENT_AB_NAME: &str = "current-ab-name";
+    pub const OPTION_ALLOW_REMOTE_CM_MODIFICATION: &str = "allow-remote-cm-modification";
 
     // android floating window options
     pub const OPTION_DISABLE_FLOATING_WINDOW: &str = "disable-floating-window";
@@ -2173,6 +2305,7 @@ pub mod keys {
         OPTION_KEEP_SCREEN_ON,
         OPTION_DISABLE_GROUP_PANEL,
         OPTION_PRE_ELEVATE_SERVICE,
+        OPTION_ALLOW_REMOTE_CM_MODIFICATION,
     ];
     // DEFAULT_SETTINGS, OVERWRITE_SETTINGS
     pub const KEYS_SETTINGS: &[&str] = &[
@@ -2211,6 +2344,24 @@ pub mod keys {
         OPTION_PRESET_ADDRESS_BOOK_TAG,
         OPTION_ENABLE_DIRECTX_CAPTURE,
         OPTION_ENABLE_ANDROID_SOFTWARE_ENCODING_HALF_SCALE,
+        OPTION_ENABLE_TRUSTED_DEVICES,
+    ];
+
+    // BUILDIN_SETTINGS
+    pub const KEYS_BUILDIN_SETTINGS: &[&str] = &[
+        OPTION_DISPLAY_NAME,
+        OPTION_DISABLE_UDP,
+        OPTION_PRESET_USERNAME,
+        OPTION_PRESET_STRATEGY_NAME,
+        OPTION_REMOVE_PRESET_PASSWORD_WARNING,
+        OPTION_HIDE_SECURITY_SETTINGS,
+        OPTION_HIDE_NETWORK_SETTINGS,
+        OPTION_HIDE_SERVER_SETTINGS,
+        OPTION_HIDE_PROXY_SETTINGS,
+        OPTION_HIDE_USERNAME_ON_CARD,
+        OPTION_HIDE_HELP_CARDS,
+        OPTION_DEFAULT_CONNECT_PASSWORD,
+        OPTION_HIDE_TRAY,
     ];
 }
 
@@ -2469,6 +2620,28 @@ mod tests {
                 HashMap::from([("0".to_string(), Resolution { w: 1920, h: 1080 })]);
             let cfg = toml::from_str::<PeerConfig>(wrong_field_str);
             assert_eq!(cfg, Ok(cfg_to_compare), "Failed to test wrong_field_str");
+        }
+    }
+
+    #[test]
+    fn test_store_load() {
+        let peerconfig_id = "123456789";
+        let cfg: PeerConfig = Default::default();
+        cfg.store(&peerconfig_id);
+        assert_eq!(PeerConfig::load(&peerconfig_id), cfg);
+
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                // ignore file type information by masking with 0o777 (see https://stackoverflow.com/a/50045872)
+                fs::metadata(PeerConfig::path(&peerconfig_id))
+                    .expect("reading metadata failed")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
         }
     }
 }

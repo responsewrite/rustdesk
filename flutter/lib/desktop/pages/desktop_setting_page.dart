@@ -61,9 +61,13 @@ class DesktopSettingPage extends StatefulWidget {
   final SettingsTabKey initialTabkey;
   static final List<SettingsTabKey> tabKeys = [
     SettingsTabKey.general,
-    if (!bind.isOutgoingOnly() && !bind.isDisableSettings())
+    if (!bind.isOutgoingOnly() &&
+        !bind.isDisableSettings() &&
+        bind.mainGetBuildinOption(key: kOptionHideSecuritySetting) != 'Y')
       SettingsTabKey.safety,
-    if (!bind.isDisableSettings()) SettingsTabKey.network,
+    if (!bind.isDisableSettings() &&
+        bind.mainGetBuildinOption(key: kOptionHideNetworkSetting) != 'Y')
+      SettingsTabKey.network,
     if (!bind.isIncomingOnly()) SettingsTabKey.display,
     if (!isWeb && !bind.isIncomingOnly() && bind.pluginFeatureIsEnabled())
       SettingsTabKey.plugin,
@@ -74,7 +78,8 @@ class DesktopSettingPage extends StatefulWidget {
   DesktopSettingPage({Key? key, required this.initialTabkey}) : super(key: key);
 
   @override
-  State<DesktopSettingPage> createState() => _DesktopSettingPageState();
+  State<DesktopSettingPage> createState() =>
+      _DesktopSettingPageState(initialTabkey);
 
   static void switch2page(SettingsTabKey page) {
     try {
@@ -84,8 +89,10 @@ class DesktopSettingPage extends StatefulWidget {
       }
       if (Get.isRegistered<PageController>(tag: _kSettingPageControllerTag)) {
         DesktopTabPage.onAddSetting(initialPage: page);
-        PageController controller = Get.find(tag: _kSettingPageControllerTag);
-        Rx<SettingsTabKey> selected = Get.find(tag: _kSettingPageTabKeyTag);
+        PageController controller =
+            Get.find<PageController>(tag: _kSettingPageControllerTag);
+        Rx<SettingsTabKey> selected =
+            Get.find<Rx<SettingsTabKey>>(tag: _kSettingPageTabKeyTag);
         selected.value = page;
         controller.jumpToPage(index);
       } else {
@@ -105,10 +112,8 @@ class _DesktopSettingPageState extends State<DesktopSettingPage>
   @override
   bool get wantKeepAlive => true;
 
-  @override
-  void initState() {
-    super.initState();
-    var initialIndex = DesktopSettingPage.tabKeys.indexOf(widget.initialTabkey);
+  _DesktopSettingPageState(SettingsTabKey initialTabkey) {
+    var initialIndex = DesktopSettingPage.tabKeys.indexOf(initialTabkey);
     if (initialIndex == -1) {
       initialIndex = 0;
     }
@@ -171,16 +176,32 @@ class _DesktopSettingPageState extends State<DesktopSettingPage>
   }
 
   List<Widget> _children() {
-    final children = [
-      _General(),
-      if (!bind.isOutgoingOnly() && !bind.isDisableSettings()) _Safety(),
-      if (!bind.isDisableSettings()) _Network(),
-      if (!bind.isIncomingOnly()) _Display(),
-      if (!isWeb && !bind.isIncomingOnly() && bind.pluginFeatureIsEnabled())
-        _Plugin(),
-      if (!bind.isDisableAccount()) _Account(),
-      _About(),
-    ];
+    final children = List<Widget>.empty(growable: true);
+    for (final tab in DesktopSettingPage.tabKeys) {
+      switch (tab) {
+        case SettingsTabKey.general:
+          children.add(const _General());
+          break;
+        case SettingsTabKey.safety:
+          children.add(const _Safety());
+          break;
+        case SettingsTabKey.network:
+          children.add(const _Network());
+          break;
+        case SettingsTabKey.display:
+          children.add(const _Display());
+          break;
+        case SettingsTabKey.plugin:
+          children.add(const _Plugin());
+          break;
+        case SettingsTabKey.account:
+          children.add(const _Account());
+          break;
+        case SettingsTabKey.about:
+          children.add(const _About());
+          break;
+      }
+    }
     return children;
   }
 
@@ -493,18 +514,20 @@ class _GeneralState extends State<_General> {
       return const Offstage();
     }
 
-    return AudioInput(builder: (devices, currentDevice, setDevice) {
-      return _Card(title: 'Audio Input Device', children: [
-        ...devices.map((device) => _Radio<String>(context,
-                value: device,
-                groupValue: currentDevice,
-                autoNewLine: false,
-                label: device, onChanged: (value) {
-              setDevice(value);
-              setState(() {});
-            }))
-      ]);
-    });
+    builder(devices, currentDevice, setDevice) {
+      final child = ComboBox(
+        keys: devices,
+        values: devices,
+        initialKey: currentDevice,
+        onChanged: (key) async {
+          setDevice(key);
+          setState(() {});
+        },
+      ).marginOnly(left: _kContentHMargin);
+      return _Card(title: 'Audio Input Device', children: [child]);
+    }
+
+    return AudioInput(builder: builder, isCm: false, isVoiceCall: false);
   }
 
   Widget record(BuildContext context) {
@@ -679,15 +702,24 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
     // Simple temp wrapper for PR check
     tmpWrapper() {
       RxBool has2fa = bind.mainHasValid2FaSync().obs;
+      RxBool hasBot = bind.mainHasValidBotSync().obs;
       update() async {
         has2fa.value = bind.mainHasValid2FaSync();
+        setState(() {});
       }
 
       onChanged(bool? checked) async {
-        change2fa(callback: update);
+        if (checked == false) {
+          CommonConfirmDialog(
+              gFFI.dialogManager, translate('cancel-2fa-confirm-tip'), () {
+            change2fa(callback: update);
+          });
+        } else {
+          change2fa(callback: update);
+        }
       }
 
-      return GestureDetector(
+      final tfa = GestureDetector(
         child: InkWell(
           child: Obx(() => Row(
                 children: [
@@ -708,6 +740,77 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
           onChanged(!has2fa.value);
         },
       ).marginOnly(left: _kCheckBoxLeftMargin);
+      if (!has2fa.value) {
+        return tfa;
+      }
+      updateBot() async {
+        hasBot.value = bind.mainHasValidBotSync();
+        setState(() {});
+      }
+
+      onChangedBot(bool? checked) async {
+        if (checked == false) {
+          CommonConfirmDialog(
+              gFFI.dialogManager, translate('cancel-bot-confirm-tip'), () {
+            changeBot(callback: updateBot);
+          });
+        } else {
+          changeBot(callback: updateBot);
+        }
+      }
+
+      final bot = GestureDetector(
+        child: Tooltip(
+          waitDuration: Duration(milliseconds: 300),
+          message: translate("enable-bot-tip"),
+          child: InkWell(
+              child: Obx(() => Row(
+                    children: [
+                      Checkbox(
+                              value: hasBot.value,
+                              onChanged: enabled ? onChangedBot : null)
+                          .marginOnly(right: 5),
+                      Expanded(
+                          child: Text(
+                        translate('Telegram bot'),
+                        style: TextStyle(
+                            color: disabledTextColor(context, enabled)),
+                      ))
+                    ],
+                  ))),
+        ),
+        onTap: () {
+          onChangedBot(!hasBot.value);
+        },
+      ).marginOnly(left: _kCheckBoxLeftMargin + 30);
+
+      final trust = Row(
+        children: [
+          Flexible(
+            child: Tooltip(
+              waitDuration: Duration(milliseconds: 300),
+              message: translate("enable-trusted-devices-tip"),
+              child: _OptionCheckBox(context, "Enable trusted devices",
+                  kOptionEnableTrustedDevices,
+                  enabled: !locked, update: (v) {
+                setState(() {});
+              }),
+            ),
+          ),
+          if (mainGetBoolOptionSync(kOptionEnableTrustedDevices))
+            ElevatedButton(
+                onPressed: locked
+                    ? null
+                    : () {
+                        manageTrustedDeviceDialog();
+                      },
+                child: Text(translate('Manage trusted devices')))
+        ],
+      ).marginOnly(left: 30);
+
+      return Column(
+        children: [tfa, bot, trust],
+      );
     }
 
     return tmpWrapper();
@@ -832,12 +935,22 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
                     label: value,
                     onChanged: locked
                         ? null
-                        : ((value) {
-                            () async {
+                        : ((value) async {
+                            callback() async {
                               await model.setVerificationMethod(
                                   passwordKeys[passwordValues.indexOf(value)]);
                               await model.updatePasswordModel();
-                            }();
+                            }
+
+                            if (value ==
+                                    passwordValues[passwordKeys
+                                        .indexOf(kUsePermanentPassword)] &&
+                                (await bind.mainGetPermanentPassword())
+                                    .isEmpty) {
+                              setPasswordDialog(notEmptyCallback: callback);
+                            } else {
+                              await callback();
+                            }
                           }),
                   ))
               .toList();
@@ -930,6 +1043,7 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
         _OptionCheckBox(context, 'allow-only-conn-window-open-tip',
             'allow-only-conn-window-open',
             reverse: false, enabled: enabled),
+      if (bind.mainIsInstalled()) unlockPin()
     ]);
   }
 
@@ -1030,12 +1144,9 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
     bool enabled = !locked;
     // Simple temp wrapper for PR check
     tmpWrapper() {
-      RxBool hasWhitelist = (bind.mainGetOptionSync(key: kOptionWhitelist) !=
-              defaultOptionWhitelist)
-          .obs;
+      RxBool hasWhitelist = whitelistNotEmpty().obs;
       update() async {
-        hasWhitelist.value = bind.mainGetOptionSync(key: kOptionWhitelist) !=
-            defaultOptionWhitelist;
+        hasWhitelist.value = whitelistNotEmpty();
       }
 
       onChanged(bool? checked) async {
@@ -1146,7 +1257,7 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
                 width: 95,
                 child: TextField(
                   controller: controller,
-                  enabled: enabled && !locked && isOptFixed,
+                  enabled: enabled && !locked && !isOptFixed,
                   onChanged: (_) => applyEnabled.value = true,
                   inputFormatters: [
                     FilteringTextInputFormatter.allow(RegExp(
@@ -1180,6 +1291,40 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
       }(),
     ];
   }
+
+  Widget unlockPin() {
+    bool enabled = !locked;
+    RxString unlockPin = bind.mainGetUnlockPin().obs;
+    update() async {
+      unlockPin.value = bind.mainGetUnlockPin();
+    }
+
+    onChanged(bool? checked) async {
+      changeUnlockPinDialog(unlockPin.value, update);
+    }
+
+    final isOptFixed = isOptionFixed(kOptionWhitelist);
+    return GestureDetector(
+      child: Obx(() => Row(
+            children: [
+              Checkbox(
+                      value: unlockPin.isNotEmpty,
+                      onChanged: enabled && !isOptFixed ? onChanged : null)
+                  .marginOnly(right: 5),
+              Expanded(
+                  child: Text(
+                translate('Unlock with PIN'),
+                style: TextStyle(color: disabledTextColor(context, enabled)),
+              ))
+            ],
+          )),
+      onTap: enabled
+          ? () {
+              onChanged(!unlockPin.isNotEmpty);
+            }
+          : null,
+    ).marginOnly(left: _kCheckBoxLeftMargin);
+  }
 }
 
 class _Network extends StatefulWidget {
@@ -1199,6 +1344,10 @@ class _NetworkState extends State<_Network> with AutomaticKeepAliveClientMixin {
     super.build(context);
     bool enabled = !locked;
     final scrollController = ScrollController();
+    final hideServer =
+        bind.mainGetBuildinOption(key: kOptionHideServerSetting) == 'Y';
+    final hideProxy =
+        bind.mainGetBuildinOption(key: kOptionHideProxySetting) == 'Y';
     return DesktopScrollWrapper(
         scrollController: scrollController,
         child: ListView(
@@ -1212,11 +1361,12 @@ class _NetworkState extends State<_Network> with AutomaticKeepAliveClientMixin {
               AbsorbPointer(
                 absorbing: locked,
                 child: Column(children: [
-                  server(enabled),
-                  _Card(title: 'Proxy', children: [
-                    _Button('Socks5/Http(s) Proxy', changeSocks5Proxy,
-                        enabled: enabled),
-                  ]),
+                  if (!hideServer) server(enabled),
+                  if (!hideProxy)
+                    _Card(title: 'Proxy', children: [
+                      _Button('Socks5/Http(s) Proxy', changeSocks5Proxy,
+                          enabled: enabled),
+                    ]),
                 ]),
               ),
             ]).marginOnly(bottom: _kListViewBottomMargin));
@@ -1715,7 +1865,7 @@ class _AboutState extends State<_About> {
           child: SingleChildScrollView(
             controller: scrollController,
             physics: DraggableNeverScrollableScrollPhysics(),
-            child: _Card(title: '${translate('About')} RustDesk', children: [
+            child: _Card(title: translate('About RustDesk'), children: [
               Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -2078,9 +2228,14 @@ Widget _lock(
                             Text(translate(label)).marginOnly(left: 5),
                           ]).marginSymmetric(vertical: 2)),
                   onPressed: () async {
-                    bool checked = await callMainCheckSuperUserPermission();
-                    if (checked) {
-                      onUnlock();
+                    final unlockPin = bind.mainGetUnlockPin();
+                    if (unlockPin.isEmpty) {
+                      bool checked = await callMainCheckSuperUserPermission();
+                      if (checked) {
+                        onUnlock();
+                      }
+                    } else {
+                      checkUnlockPinDialog(unlockPin, onUnlock);
                     }
                   },
                 ).marginSymmetric(horizontal: 2, vertical: 4),
@@ -2257,35 +2412,40 @@ void changeSocks5Proxy() async {
           children: [
             Row(
               children: [
-                ConstrainedBox(
-                  constraints: const BoxConstraints(minWidth: 140),
-                  child: Align(
-                      alignment: Alignment.centerRight,
-                      child: Row(
-                        children: [
-                          Text(
-                            translate('Server'),
-                          ).marginOnly(right: 4),
-                          Tooltip(
-                            waitDuration: Duration(milliseconds: 0),
-                            message: translate("default_proxy_tip"),
-                            child: Icon(
-                              Icons.help_outline_outlined,
-                              size: 16,
-                              color: Theme.of(context)
-                                  .textTheme
-                                  .titleLarge
-                                  ?.color
-                                  ?.withOpacity(0.5),
+                if (!isMobile)
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(minWidth: 140),
+                    child: Align(
+                        alignment: Alignment.centerRight,
+                        child: Row(
+                          children: [
+                            Text(
+                              translate('Server'),
+                            ).marginOnly(right: 4),
+                            Tooltip(
+                              waitDuration: Duration(milliseconds: 0),
+                              message: translate("default_proxy_tip"),
+                              child: Icon(
+                                Icons.help_outline_outlined,
+                                size: 16,
+                                color: Theme.of(context)
+                                    .textTheme
+                                    .titleLarge
+                                    ?.color
+                                    ?.withOpacity(0.5),
+                              ),
                             ),
-                          ),
-                        ],
-                      )).marginOnly(right: 10),
-                ),
+                          ],
+                        )).marginOnly(right: 10),
+                  ),
                 Expanded(
                   child: TextField(
                     decoration: InputDecoration(
                       errorText: proxyMsg.isNotEmpty ? proxyMsg : null,
+                      labelText: isMobile ? translate('Server') : null,
+                      helperText:
+                          isMobile ? translate("default_proxy_tip") : null,
+                      helperMaxLines: isMobile ? 3 : null,
                     ),
                     controller: proxyController,
                     autofocus: true,
@@ -2296,15 +2456,19 @@ void changeSocks5Proxy() async {
             ).marginOnly(bottom: 8),
             Row(
               children: [
-                ConstrainedBox(
-                    constraints: const BoxConstraints(minWidth: 140),
-                    child: Text(
-                      '${translate("Username")}:',
-                      textAlign: TextAlign.right,
-                    ).marginOnly(right: 10)),
+                if (!isMobile)
+                  ConstrainedBox(
+                      constraints: const BoxConstraints(minWidth: 140),
+                      child: Text(
+                        '${translate("Username")}:',
+                        textAlign: TextAlign.right,
+                      ).marginOnly(right: 10)),
                 Expanded(
                   child: TextField(
                     controller: userController,
+                    decoration: InputDecoration(
+                      labelText: isMobile ? translate('Username') : null,
+                    ),
                     enabled: !isOptFixed,
                   ),
                 ),
@@ -2312,16 +2476,18 @@ void changeSocks5Proxy() async {
             ).marginOnly(bottom: 8),
             Row(
               children: [
-                ConstrainedBox(
-                    constraints: const BoxConstraints(minWidth: 140),
-                    child: Text(
-                      '${translate("Password")}:',
-                      textAlign: TextAlign.right,
-                    ).marginOnly(right: 10)),
+                if (!isMobile)
+                  ConstrainedBox(
+                      constraints: const BoxConstraints(minWidth: 140),
+                      child: Text(
+                        '${translate("Password")}:',
+                        textAlign: TextAlign.right,
+                      ).marginOnly(right: 10)),
                 Expanded(
                   child: Obx(() => TextField(
                         obscureText: obscure.value,
                         decoration: InputDecoration(
+                            labelText: isMobile ? translate('Password') : null,
                             suffixIcon: IconButton(
                                 onPressed: () => obscure.value = !obscure.value,
                                 icon: Icon(obscure.value

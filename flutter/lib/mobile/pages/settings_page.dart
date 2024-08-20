@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_hbb/common/widgets/setting_widgets.dart';
+import 'package:flutter_hbb/desktop/pages/desktop_setting_page.dart';
 import 'package:get/get.dart';
 import 'package:provider/provider.dart';
 import 'package:settings_ui/settings_ui.dart';
@@ -83,18 +85,17 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
   var _fingerprint = "";
   var _buildDate = "";
   var _autoDisconnectTimeout = "";
+  var _hideServer = false;
+  var _hideProxy = false;
+  var _hideNetwork = false;
+  var _enableTrustedDevices = false;
 
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addObserver(this);
-
+  _SettingsState() {
     _enableAbr = option2bool(
         kOptionEnableAbr, bind.mainGetOptionSync(key: kOptionEnableAbr));
     _denyLANDiscovery = !option2bool(kOptionEnableLanDiscovery,
         bind.mainGetOptionSync(key: kOptionEnableLanDiscovery));
-    _onlyWhiteList = (bind.mainGetOptionSync(key: kOptionWhitelist)) !=
-        defaultOptionWhitelist;
+    _onlyWhiteList = whitelistNotEmpty();
     _enableDirectIPAccess = option2bool(
         kOptionDirectServer, bind.mainGetOptionSync(key: kOptionDirectServer));
     _enableRecordSession = option2bool(kOptionEnableRecordSession,
@@ -109,8 +110,20 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
         bind.mainGetOptionSync(key: kOptionAllowAutoDisconnect));
     _autoDisconnectTimeout =
         bind.mainGetOptionSync(key: kOptionAutoDisconnectTimeout);
+    _hideServer =
+        bind.mainGetBuildinOption(key: kOptionHideServerSetting) == 'Y';
+    _hideProxy = bind.mainGetBuildinOption(key: kOptionHideProxySetting) == 'Y';
+    _hideNetwork =
+        bind.mainGetBuildinOption(key: kOptionHideNetworkSetting) == 'Y';
+    _enableTrustedDevices = mainGetBoolOptionSync(kOptionEnableTrustedDevices);
+  }
 
-    () async {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       var update = false;
 
       if (_hasIgnoreBattery) {
@@ -169,7 +182,7 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
       if (update) {
         setState(() {});
       }
-    }();
+    });
   }
 
   @override
@@ -233,18 +246,76 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
       ],
     ));
     final List<AbstractSettingsTile> enhancementsTiles = [];
-    final List<AbstractSettingsTile> shareScreenTiles = [
+    final enable2fa = bind.mainHasValid2FaSync();
+    final List<AbstractSettingsTile> tfaTiles = [
       SettingsTile.switchTile(
         title: Text(translate('enable-2fa-title')),
-        initialValue: bind.mainHasValid2FaSync(),
-        onToggle: (_) async {
+        initialValue: enable2fa,
+        onToggle: (v) async {
           update() async {
             setState(() {});
           }
 
-          change2fa(callback: update);
+          if (v == false) {
+            CommonConfirmDialog(
+                gFFI.dialogManager, translate('cancel-2fa-confirm-tip'), () {
+              change2fa(callback: update);
+            });
+          } else {
+            change2fa(callback: update);
+          }
         },
       ),
+      if (enable2fa)
+        SettingsTile.switchTile(
+          title: Text(translate('Telegram bot')),
+          initialValue: bind.mainHasValidBotSync(),
+          onToggle: (v) async {
+            update() async {
+              setState(() {});
+            }
+
+            if (v == false) {
+              CommonConfirmDialog(
+                  gFFI.dialogManager, translate('cancel-bot-confirm-tip'), () {
+                changeBot(callback: update);
+              });
+            } else {
+              changeBot(callback: update);
+            }
+          },
+        ),
+      if (enable2fa)
+        SettingsTile.switchTile(
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(translate('Enable trusted devices')),
+              Text('* ${translate('enable-trusted-devices-tip')}',
+                  style: Theme.of(context).textTheme.bodySmall),
+            ],
+          ),
+          initialValue: _enableTrustedDevices,
+          onToggle: isOptionFixed(kOptionEnableTrustedDevices)
+              ? null
+              : (v) async {
+                  mainSetBoolOption(kOptionEnableTrustedDevices, v);
+                  setState(() {
+                    _enableTrustedDevices = v;
+                  });
+                },
+        ),
+      if (enable2fa && _enableTrustedDevices)
+        SettingsTile(
+            title: Text(translate('Manage trusted devices')),
+            trailing: Icon(Icons.arrow_forward_ios),
+            onPressed: (context) {
+              Navigator.push(context, MaterialPageRoute(builder: (context) {
+                return _ManageTrustedDevices();
+              }));
+            })
+    ];
+    final List<AbstractSettingsTile> shareScreenTiles = [
       SettingsTile.switchTile(
         title: Text(translate('Deny LAN discovery')),
         initialValue: _denyLANDiscovery,
@@ -273,9 +344,7 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
         initialValue: _onlyWhiteList,
         onToggle: (_) async {
           update() async {
-            final onlyWhiteList =
-                (await bind.mainGetOption(key: kOptionWhitelist)) !=
-                    defaultOptionWhitelist;
+            final onlyWhiteList = whitelistNotEmpty();
             if (onlyWhiteList != _onlyWhiteList) {
               setState(() {
                 _onlyWhiteList = onlyWhiteList;
@@ -530,6 +599,8 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
     ));
 
     final disabledSettings = bind.isDisableSettings();
+    final hideSecuritySettings =
+        bind.mainGetBuildinOption(key: kOptionHideSecuritySetting) == 'Y';
     final settings = SettingsList(
       sections: [
         customClientSection,
@@ -553,12 +624,19 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
             ],
           ),
         SettingsSection(title: Text(translate("Settings")), tiles: [
-          if (!disabledSettings)
+          if (!disabledSettings && !_hideNetwork && !_hideServer)
             SettingsTile(
                 title: Text(translate('ID/Relay Server')),
                 leading: Icon(Icons.cloud),
                 onPressed: (context) {
                   showServerSettings(gFFI.dialogManager);
+                }),
+          if (!isIOS && !_hideNetwork && !_hideProxy)
+            SettingsTile(
+                title: Text(translate('Socks5/Http(s) Proxy')),
+                leading: Icon(Icons.network_ping),
+                onPressed: (context) {
+                  changeSocks5Proxy();
                 }),
           SettingsTile(
               title: Text(translate('Language')),
@@ -625,13 +703,24 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
               ),
             ],
           ),
-        if (isAndroid && !disabledSettings && !outgoingOnly)
+        if (isAndroid &&
+            !disabledSettings &&
+            !outgoingOnly &&
+            !hideSecuritySettings)
+          SettingsSection(title: Text('2FA'), tiles: tfaTiles),
+        if (isAndroid &&
+            !disabledSettings &&
+            !outgoingOnly &&
+            !hideSecuritySettings)
           SettingsSection(
             title: Text(translate("Share Screen")),
             tiles: shareScreenTiles,
           ),
         if (!bind.isIncomingOnly()) defaultDisplaySection(),
-        if (isAndroid && !disabledSettings && !outgoingOnly)
+        if (isAndroid &&
+            !disabledSettings &&
+            !outgoingOnly &&
+            !hideSecuritySettings)
           SettingsSection(
             title: Text(translate("Enhancements")),
             tiles: enhancementsTiles,
@@ -786,7 +875,7 @@ void showThemeSettings(OverlayDialogManager dialogManager) async {
 void showAbout(OverlayDialogManager dialogManager) {
   dialogManager.show((setState, close, context) {
     return CustomAlertDialog(
-      title: Text('${translate('About')} RustDesk'),
+      title: Text(translate('About RustDesk')),
       content: Wrap(direction: Axis.vertical, spacing: 12, children: [
         Text('Version: $version'),
         InkWell(
@@ -936,6 +1025,51 @@ class __DisplayPageState extends State<_DisplayPage> {
                   key: key, value: b ? 'Y' : defaultOptionNo);
               setState(() {});
             },
+    );
+  }
+}
+
+class _ManageTrustedDevices extends StatefulWidget {
+  const _ManageTrustedDevices();
+
+  @override
+  State<_ManageTrustedDevices> createState() => __ManageTrustedDevicesState();
+}
+
+class __ManageTrustedDevicesState extends State<_ManageTrustedDevices> {
+  RxList<TrustedDevice> trustedDevices = RxList.empty(growable: true);
+  RxList<Uint8List> selectedDevices = RxList.empty();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(translate('Manage trusted devices')),
+        centerTitle: true,
+        actions: [
+          Obx(() => IconButton(
+              icon: Icon(Icons.delete, color: Colors.white),
+              onPressed: selectedDevices.isEmpty
+                  ? null
+                  : () {
+                      confrimDeleteTrustedDevicesDialog(
+                          trustedDevices, selectedDevices);
+                    }))
+        ],
+      ),
+      body: FutureBuilder(
+          future: TrustedDevice.get(),
+          builder: (context, snapshot) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return Center(child: CircularProgressIndicator());
+            }
+            if (snapshot.hasError) {
+              return Center(child: Text('Error: ${snapshot.error}'));
+            }
+            final devices = snapshot.data as List<TrustedDevice>;
+            trustedDevices = devices.obs;
+            return trustedDevicesTable(trustedDevices, selectedDevices);
+          }),
     );
   }
 }

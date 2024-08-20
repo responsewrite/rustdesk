@@ -92,13 +92,16 @@ class _FileManagerPageState extends State<FileManagerPage>
       _ffi.dialogManager
           .showLoading(translate('Connecting...'), onCancel: closeConnection);
     });
-    Get.put(_ffi, tag: 'ft_${widget.id}');
+    Get.put<FFI>(_ffi, tag: 'ft_${widget.id}');
     if (!isLinux) {
       WakelockPlus.enable();
     }
     debugPrint("File manager page init success with id ${widget.id}");
     _ffi.dialogManager.setOverlayState(_overlayKeyState);
-    widget.tabController.onSelected?.call(widget.id);
+    // Call onSelected in post frame callback, since we cannot guarantee that the callback will not call setState.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      widget.tabController.onSelected?.call(widget.id);
+    });
   }
 
   @override
@@ -259,6 +262,7 @@ class _FileManagerPageState extends State<FileManagerPage>
                             Offstage(
                               offstage: item.state != JobState.paused,
                               child: MenuButton(
+                                tooltip: translate("Resume"),
                                 onPressed: () {
                                   jobController.resumeJob(item.id);
                                 },
@@ -271,6 +275,7 @@ class _FileManagerPageState extends State<FileManagerPage>
                               ),
                             ),
                             MenuButton(
+                              tooltip: translate("Delete"),
                               padding: EdgeInsets.only(right: 15),
                               child: SvgPicture.asset(
                                 "assets/close.svg",
@@ -518,6 +523,7 @@ class _FileManagerViewState extends State<FileManagerView> {
               Row(
                 children: [
                   MenuButton(
+                    tooltip: translate('Back'),
                     padding: EdgeInsets.only(
                       right: 3,
                     ),
@@ -537,6 +543,7 @@ class _FileManagerViewState extends State<FileManagerView> {
                     },
                   ),
                   MenuButton(
+                    tooltip: translate('Parent directory'),
                     child: RotatedBox(
                       quarterTurns: 3,
                       child: SvgPicture.asset(
@@ -601,6 +608,7 @@ class _FileManagerViewState extends State<FileManagerView> {
                 switch (_locationStatus.value) {
                   case LocationStatus.bread:
                     return MenuButton(
+                      tooltip: translate('Search'),
                       onPressed: () {
                         _locationStatus.value = LocationStatus.fileSearchBar;
                         Future.delayed(
@@ -627,6 +635,7 @@ class _FileManagerViewState extends State<FileManagerView> {
                     );
                   case LocationStatus.fileSearchBar:
                     return MenuButton(
+                      tooltip: translate('Clear'),
                       onPressed: () {
                         onSearchText("", isLocal);
                         _locationStatus.value = LocationStatus.bread;
@@ -642,6 +651,7 @@ class _FileManagerViewState extends State<FileManagerView> {
                 }
               }),
               MenuButton(
+                tooltip: translate('Refresh File'),
                 padding: EdgeInsets.only(
                   left: 3,
                 ),
@@ -667,6 +677,7 @@ class _FileManagerViewState extends State<FileManagerView> {
                       isLocal ? MainAxisAlignment.start : MainAxisAlignment.end,
                   children: [
                     MenuButton(
+                      tooltip: translate('Home'),
                       padding: EdgeInsets.only(
                         right: 3,
                       ),
@@ -682,11 +693,27 @@ class _FileManagerViewState extends State<FileManagerView> {
                       hoverColor: Theme.of(context).hoverColor,
                     ),
                     MenuButton(
+                      tooltip: translate('Create Folder'),
                       onPressed: () {
                         final name = TextEditingController();
+                        String? errorText;
                         _ffi.dialogManager.show((setState, close, context) {
+                          name.addListener(() {
+                            if (errorText != null) {
+                              setState(() {
+                                errorText = null;
+                              });
+                            }
+                          });
                           submit() {
                             if (name.value.text.isNotEmpty) {
+                              if (!PathUtil.validName(name.value.text,
+                                  controller.options.value.isWindows)) {
+                                setState(() {
+                                  errorText = translate("Invalid folder name");
+                                });
+                                return;
+                              }
                               controller.createDir(PathUtil.join(
                                 controller.directory.value.path,
                                 name.value.text,
@@ -718,6 +745,7 @@ class _FileManagerViewState extends State<FileManagerView> {
                                     labelText: translate(
                                       "Please enter the folder name",
                                     ),
+                                    errorText: errorText,
                                   ),
                                   controller: name,
                                   autofocus: true,
@@ -751,6 +779,7 @@ class _FileManagerViewState extends State<FileManagerView> {
                       hoverColor: Theme.of(context).hoverColor,
                     ),
                     Obx(() => MenuButton(
+                          tooltip: translate('Delete'),
                           onPressed: SelectedItems.valid(selectedItems.items)
                               ? () async {
                                   await (controller
@@ -882,6 +911,7 @@ class _FileManagerViewState extends State<FileManagerView> {
         menuPos = RelativeRect.fromLTRB(x, y, x, y);
       },
       child: MenuButton(
+        tooltip: translate('More'),
         onPressed: () => mod_menu.showMenu(
           context: context,
           position: menuPos,
@@ -971,6 +1001,7 @@ class _FileManagerViewState extends State<FileManagerView> {
           final lastModifiedStr = entry.isDrive
               ? " "
               : "${entry.lastModified().toString().replaceAll(".000", "")}   ";
+          var secondaryPosition = RelativeRect.fromLTRB(0, 0, 0, 0);
           return Padding(
             padding: EdgeInsets.symmetric(vertical: 1),
             child: Obx(() => Container(
@@ -1034,6 +1065,35 @@ class _FileManagerViewState extends State<FileManagerView> {
                                 }
                                 _onSelectedChanged(
                                     items, filteredEntries, entry, isLocal);
+                              },
+                              onSecondaryTap: () {
+                                final items = [
+                                  if (!entry.isDrive &&
+                                      versionCmp(_ffi.ffiModel.pi.version,
+                                              "1.3.0") >=
+                                          0)
+                                    mod_menu.PopupMenuItem(
+                                      child: Text("Rename"),
+                                      height: CustomPopupMenuTheme.height,
+                                      onTap: () {
+                                        controller.renameAction(entry, isLocal);
+                                      },
+                                    )
+                                ];
+                                if (items.isNotEmpty) {
+                                  mod_menu.showMenu(
+                                    context: context,
+                                    position: secondaryPosition,
+                                    items: items,
+                                  );
+                                }
+                              },
+                              onSecondaryTapDown: (details) {
+                                secondaryPosition = RelativeRect.fromLTRB(
+                                    details.globalPosition.dx,
+                                    details.globalPosition.dy,
+                                    details.globalPosition.dx,
+                                    details.globalPosition.dy);
                               },
                             ),
                             SizedBox(
