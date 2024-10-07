@@ -7,6 +7,7 @@ on:
   pull_request:
     branches:
       - main
+  workflow_dispatch: # 添加这个触发器来支持手动运行
 
 jobs:
   build:
